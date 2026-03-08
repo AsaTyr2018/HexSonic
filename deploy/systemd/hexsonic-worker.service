@@ -1,0 +1,18 @@
+[Unit]
+Description=HEXSONIC Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hexsonic
+Group=hexsonic
+WorkingDirectory=/opt/hexsonic
+EnvironmentFile=/etc/hexsonic/hexsonic.env
+ExecStart=/usr/local/bin/hexsonic-worker
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,141 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: hexsonic
+      POSTGRES_USER: hexsonic
+      POSTGRES_PASSWORD: "${HEXSONIC_DB_PASSWORD:?HEXSONIC_DB_PASSWORD is required}"
+    volumes:
+      - ./runtime/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hexsonic -d hexsonic"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:8
+    volumes:
+      - ./runtime/valkey:/data
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME:?KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME is required}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD:?KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD is required}"
+      KC_HOSTNAME: "${KEYCLOAK_HOSTNAME:-}"
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "${KEYCLOAK_PUBLIC_PORT:-18081}:8080"
+    volumes:
+      - ./runtime/keycloak:/opt/keycloak/data
+      - ./runtime/keycloak-import/realm-hexsonic.json:/opt/keycloak/data/import/realm-hexsonic.json:ro
+
+  api:
+    build: .
+    command: ["hexsonic-api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${HEXSONIC_PUBLIC_PORT:-18080}:8080"
+    environment:
+      HEXSONIC_HTTP_ADDR: ":8080"
+      HEXSONIC_DATABASE_URL: "postgres://hexsonic:${HEXSONIC_DB_PASSWORD:?HEXSONIC_DB_PASSWORD is required}@postgres:5432/hexsonic?sslmode=disable"
+      HEXSONIC_REDIS_ADDR: "valkey:6379"
+      HEXSONIC_STORAGE_ROOT: "/data"
+      HEXSONIC_SIGNING_KEY: "${HEXSONIC_SIGNING_KEY:?HEXSONIC_SIGNING_KEY is required}"
+      HEXSONIC_SUBSONIC_SECRET_KEY: "${HEXSONIC_SUBSONIC_SECRET_KEY:-}"
+      HEXSONIC_ENABLE_DERIVED_SYNC: "false"
+      HEXSONIC_AUTH_REQUIRED: "${HEXSONIC_AUTH_REQUIRED:-true}"
+      HEXSONIC_OIDC_ISSUER_URL: "${HEXSONIC_OIDC_ISSUER_URL:-http://keycloak:8080/realms/hexsonic}"
+      HEXSONIC_OIDC_AUDIENCE: "${HEXSONIC_OIDC_AUDIENCE:-}"
+      HEXSONIC_OIDC_CLIENT_ID: "${HEXSONIC_OIDC_CLIENT_ID:-hexsonic-api}"
+      HEXSONIC_OIDC_CLIENT_SECRET: "${HEXSONIC_OIDC_CLIENT_SECRET:?HEXSONIC_OIDC_CLIENT_SECRET is required}"
+      HEXSONIC_OIDC_ADMIN_USER: "${HEXSONIC_OIDC_ADMIN_USER:?HEXSONIC_OIDC_ADMIN_USER is required}"
+      HEXSONIC_OIDC_ADMIN_PASSWORD: "${HEXSONIC_OIDC_ADMIN_PASSWORD:?HEXSONIC_OIDC_ADMIN_PASSWORD is required}"
+      HEXSONIC_PROMETHEUS_URL: "${HEXSONIC_PROMETHEUS_URL:-http://prometheus:9090/prometheus}"
+      HEXSONIC_GRAFANA_URL: "${HEXSONIC_GRAFANA_URL:-http://grafana:3000}"
+      HEXSONIC_PROMETHEUS_PROXY_URL: "${HEXSONIC_PROMETHEUS_PROXY_URL:-http://oauth2-proxy:4180}"
+      HEXSONIC_GRAFANA_PROXY_URL: "${HEXSONIC_GRAFANA_PROXY_URL:-http://grafana:3000}"
+      HEXSONIC_PROMETHEUS_PUBLIC_URL: "${HEXSONIC_PROMETHEUS_PUBLIC_URL:-}"
+      HEXSONIC_GRAFANA_PUBLIC_URL: "${HEXSONIC_GRAFANA_PUBLIC_URL:-}"
+    volumes:
+      - ./runtime/data:/data
+
+  worker:
+    build: .
+    command: ["hexsonic-worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HEXSONIC_DATABASE_URL: "postgres://hexsonic:${HEXSONIC_DB_PASSWORD:?HEXSONIC_DB_PASSWORD is required}@postgres:5432/hexsonic?sslmode=disable"
+      HEXSONIC_REDIS_ADDR: "valkey:6379"
+      HEXSONIC_STORAGE_ROOT: "/data"
+      HEXSONIC_SIGNING_KEY: "${HEXSONIC_SIGNING_KEY:?HEXSONIC_SIGNING_KEY is required}"
+    volumes:
+      - ./runtime/data:/data
+
+  prometheus:
+    image: prom/prometheus:v3.3.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.external-url=/prometheus/"
+      - "--web.route-prefix=/prometheus/"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1
+    depends_on:
+      - keycloak
+      - prometheus
+    command:
+      - --http-address=0.0.0.0:4180
+      - --provider=keycloak-oidc
+      - --oidc-issuer-url=${HEXSONIC_OIDC_BROWSER_ISSUER_URL:-http://keycloak:8080/realms/hexsonic}
+      - --redirect-url=${HEXSONIC_PUBLIC_BASE_URL:-http://localhost:18080}/prometheus/oauth2/callback
+      - --proxy-prefix=/prometheus/oauth2
+      - --email-domain=*
+      - --cookie-secure=${OAUTH2_PROXY_COOKIE_SECURE:-true}
+      - --cookie-samesite=lax
+      - --scope=openid profile email
+      - --insecure-oidc-allow-unverified-email=true
+      - --oidc-extra-audience=account
+      - --upstream=http://prometheus:9090
+      - --pass-access-token=true
+      - --set-xauthrequest=true
+      - --skip-provider-button=true
+      - --reverse-proxy=true
+    environment:
+      OAUTH2_PROXY_CLIENT_ID: "${HEXSONIC_OIDC_CLIENT_ID:-hexsonic-api}"
+      OAUTH2_PROXY_CLIENT_SECRET: "${HEXSONIC_OIDC_CLIENT_SECRET:?HEXSONIC_OIDC_CLIENT_SECRET is required}"
+      OAUTH2_PROXY_COOKIE_SECRET: "${OAUTH2_PROXY_COOKIE_SECRET:?OAUTH2_PROXY_COOKIE_SECRET is required}"
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    environment:
+      GF_SERVER_ROOT_URL: "${HEXSONIC_PUBLIC_BASE_URL:-http://localhost:18080}/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_OAUTH_AUTO_LOGIN: "true"
+      GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
+      GF_AUTH_GENERIC_OAUTH_NAME: "Keycloak"
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: "${HEXSONIC_OIDC_CLIENT_ID:-hexsonic-api}"
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: "${HEXSONIC_OIDC_CLIENT_SECRET:?HEXSONIC_OIDC_CLIENT_SECRET is required}"
+      GF_AUTH_GENERIC_OAUTH_SCOPES: "openid profile email"
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "${HEXSONIC_OIDC_BROWSER_ISSUER_URL:-http://keycloak:8080/realms/hexsonic}/protocol/openid-connect/auth"
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "http://keycloak:8080/realms/hexsonic/protocol/openid-connect/token"
+      GF_AUTH_GENERIC_OAUTH_API_URL: "http://keycloak:8080/realms/hexsonic/protocol/openid-connect/userinfo"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
+      GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains(realm_access.roles[*], 'admin') && 'Admin' || 'Viewer'"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/var/lib/grafana/dashboards/hexsonic-overview.json"
+    volumes:
+      - ./runtime/grafana:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro

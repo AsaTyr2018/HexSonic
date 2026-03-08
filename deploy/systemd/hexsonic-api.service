@@ -1,0 +1,18 @@
+[Unit]
+Description=HEXSONIC API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hexsonic
+Group=hexsonic
+WorkingDirectory=/opt/hexsonic
+EnvironmentFile=/etc/hexsonic/hexsonic.env
+ExecStart=/usr/local/bin/hexsonic-api
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

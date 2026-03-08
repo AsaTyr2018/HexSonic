@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: ./SECURITY.md
+    about: Please report vulnerabilities privately as described in SECURITY.md.
+  - name: Support
+    url: ./SUPPORT.md
+    about: Use SUPPORT.md for help and triage guidance.

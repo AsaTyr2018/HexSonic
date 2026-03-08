@@ -1,0 +1,43 @@
+{
+  "realm": "hexsonic",
+  "enabled": true,
+  "roles": {
+    "realm": [
+      { "name": "user" },
+      { "name": "member" },
+      { "name": "moderator" },
+      { "name": "admin" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "hexsonic-api",
+      "name": "HEXSONIC API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "__HEXSONIC_OIDC_CLIENT_SECRET__",
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "serviceAccountsEnabled": true,
+      "fullScopeAllowed": true,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"]
+    }
+  ],
+  "users": [
+    {
+      "username": "__HEXSONIC_ADMIN_USERNAME__",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "__HEXSONIC_ADMIN_EMAIL__",
+      "firstName": "HEXSONIC",
+      "lastName": "Admin",
+      "requiredActions": [],
+      "credentials": [
+        { "type": "password", "value": "__HEXSONIC_ADMIN_PASSWORD__", "temporary": false }
+      ],
+      "realmRoles": ["admin", "moderator", "member", "user"]
+    }
+  ]
+}
