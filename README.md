@@ -17,6 +17,46 @@ HEXSONIC focuses on:
 - role-based administration
 - OpenSubsonic-compatible API endpoints
 
+## Feature Breakdown
+
+### Multi-User and Access Control
+- OIDC-based login (Keycloak)
+- Hierarchical roles: `user`, `member`, `moderator`, `admin`
+- Creator badge gate for upload rights
+- Owner-based management boundaries (owner + admin override)
+- Persistent login with refresh-token flow
+
+### Registration and Invite Flow
+- Global registration toggle (admin-controlled)
+- Invite-link based onboarding (works even if public registration is disabled)
+- Invite lifecycle management (create/list/revoke/expiry)
+- Dedicated invite registration entry flow (`/register?invite=...`)
+
+### Library and Visibility Model
+- Album and track management separated
+- Public/private visibility per album and per track
+- Hierarchical behavior for album visibility (album-level public propagation)
+- Metadata edit support (title, artist, album, genre, covers, lyrics)
+
+### Social and Community Features
+- Album comments
+- Track rating (stars)
+- Public user profiles with follow support
+- Uploader attribution in library views
+
+### Playback and Client Compatibility
+- Web player + advanced popout player
+- Playlist queue handling with direct track jump
+- Background transcoding pipeline (derived formats for broader client support)
+- OpenSubsonic-compatible API for external clients
+
+### Admin and Operations
+- User administration (roles, moderation, account actions)
+- Registration control and invite administration
+- Admin log/debug views in WebUI
+- Prometheus and Grafana integration (proxied through HEXSONIC)
+- Docker-first deployment with systemd autostart support
+
 ## Intended Use and Legal Notice
 
 HEXSONIC is designed for hosting:
@@ -210,6 +250,5 @@ See [LICENSE](LICENSE).
 <img width="1267" height="725" alt="grafik" src="https://github.com/user-attachments/assets/95a4870b-7511-4c8f-b8dc-f1c2c0049b0d" />
 <img width="1479" height="669" alt="grafik" src="https://github.com/user-attachments/assets/6b705a4a-617c-454b-8f83-ebe691666906" />
 <img width="1715" height="785" alt="grafik" src="https://github.com/user-attachments/assets/e7514684-88c5-49d5-a8b3-d22b971f5d19" />
-
 
 
