@@ -203,3 +203,13 @@ AUTH_TOKEN="<ACCESS_TOKEN>" ./scripts/smoke_test.sh
 
 Licensed under the Mozilla Public License 2.0 (MPL-2.0).  
 See [LICENSE](LICENSE).
+
+
+## Screenshots
+<img width="1916" height="889" alt="grafik" src="https://github.com/user-attachments/assets/a4fdc758-e424-4aec-9a6a-377fec17a188" />
+<img width="1267" height="725" alt="grafik" src="https://github.com/user-attachments/assets/95a4870b-7511-4c8f-b8dc-f1c2c0049b0d" />
+<img width="1479" height="669" alt="grafik" src="https://github.com/user-attachments/assets/6b705a4a-617c-454b-8f83-ebe691666906" />
+<img width="1715" height="785" alt="grafik" src="https://github.com/user-attachments/assets/e7514684-88c5-49d5-a8b3-d22b971f5d19" />
+
+
+
