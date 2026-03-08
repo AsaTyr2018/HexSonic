@@ -37,6 +37,7 @@ services:
   api:
     build: .
     command: ["hexsonic-api"]
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,6 +56,7 @@ services:
       HEXSONIC_OIDC_AUDIENCE: "${HEXSONIC_OIDC_AUDIENCE:-}"
       HEXSONIC_OIDC_CLIENT_ID: "${HEXSONIC_OIDC_CLIENT_ID:-hexsonic-api}"
       HEXSONIC_OIDC_CLIENT_SECRET: "${HEXSONIC_OIDC_CLIENT_SECRET:?HEXSONIC_OIDC_CLIENT_SECRET is required}"
+      HEXSONIC_OIDC_SCOPES: "${HEXSONIC_OIDC_SCOPES:-openid profile email offline_access}"
       HEXSONIC_OIDC_ADMIN_USER: "${HEXSONIC_OIDC_ADMIN_USER:?HEXSONIC_OIDC_ADMIN_USER is required}"
       HEXSONIC_OIDC_ADMIN_PASSWORD: "${HEXSONIC_OIDC_ADMIN_PASSWORD:?HEXSONIC_OIDC_ADMIN_PASSWORD is required}"
       HEXSONIC_PROMETHEUS_URL: "${HEXSONIC_PROMETHEUS_URL:-http://prometheus:9090/prometheus}"
@@ -69,6 +71,7 @@ services:
   worker:
     build: .
     command: ["hexsonic-worker"]
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,6 +80,7 @@ services:
       HEXSONIC_REDIS_ADDR: "valkey:6379"
       HEXSONIC_STORAGE_ROOT: "/data"
       HEXSONIC_SIGNING_KEY: "${HEXSONIC_SIGNING_KEY:?HEXSONIC_SIGNING_KEY is required}"
+      HEXSONIC_AUTH_REQUIRED: "false"
     volumes:
       - ./runtime/data:/data
 
@@ -91,6 +95,7 @@ services:
 
   oauth2-proxy:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.8.1
+    restart: unless-stopped
     depends_on:
       - keycloak
       - prometheus

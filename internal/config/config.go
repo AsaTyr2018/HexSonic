@@ -35,6 +35,7 @@ type Config struct {
 	OIDCAudience       string
 	OIDCClientID       string
 	OIDCClientSecret   string
+	OIDCScopes         string
 	OIDCAdminUser      string
 	OIDCAdminPassword  string
 	SubsonicSecretKey  string
@@ -69,6 +70,7 @@ func Load() (Config, error) {
 		OIDCAudience:       getEnv("HEXSONIC_OIDC_AUDIENCE", ""),
 		OIDCClientID:       getEnv("HEXSONIC_OIDC_CLIENT_ID", "hexsonic-api"),
 		OIDCClientSecret:   getEnv("HEXSONIC_OIDC_CLIENT_SECRET", ""),
+		OIDCScopes:         getEnv("HEXSONIC_OIDC_SCOPES", "openid profile email offline_access"),
 		OIDCAdminUser:      getEnv("HEXSONIC_OIDC_ADMIN_USER", ""),
 		OIDCAdminPassword:  getEnv("HEXSONIC_OIDC_ADMIN_PASSWORD", ""),
 		SubsonicSecretKey:  getEnv("HEXSONIC_SUBSONIC_SECRET_KEY", ""),

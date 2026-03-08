@@ -2302,7 +2302,8 @@
       const q = Array.isArray(snapshot.queue) ? snapshot.queue : [];
       const idx = Number(snapshot.queue_index || -1);
       const needle = String(state.popQueueFilter || '').trim().toLowerCase();
-      const rows = !needle ? q : q.filter((item) => {
+      const indexed = q.map((item, queueIndex) => ({ item, queueIndex }));
+      const rows = !needle ? indexed : indexed.filter(({ item }) => {
         const hay = `${item.title || ''} ${item.artist || ''} ${item.album || ''}`.toLowerCase();
         return hay.includes(needle);
       });
@@ -2313,10 +2314,9 @@
         root.innerHTML = '<div class="muted" style="padding:10px;">Queue empty.</div>';
         return;
       }
-      rows.forEach((item) => {
-        const i = q.findIndex((qItem) => qItem.id === item.id);
+      rows.forEach(({ item, queueIndex }) => {
         const row = document.createElement('div');
-        row.className = `pop-q-item ${i === idx ? 'active' : ''}`;
+        row.className = `pop-q-item ${queueIndex === idx ? 'active' : ''}`;
         row.innerHTML = `
           <div>
             <div class="pop-q-title">${esc(item.title || '-')}</div>
@@ -2325,7 +2325,7 @@
         `;
         row.onclick = () => {
           if (!state.playerBridge) return;
-          state.playerBridge.postMessage({ type: 'player_control', action: 'jump_queue_index', value: i });
+          state.playerBridge.postMessage({ type: 'player_control', action: 'jump_queue_index', value: queueIndex });
         };
         root.appendChild(row);
       });
@@ -2556,22 +2556,29 @@
 
     async function refreshAccessToken() {
       if (!state.refreshToken) return false;
-      const res = await fetch('/api/v1/auth/refresh', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: state.refreshToken })
-      });
-      if (!res.ok) {
-        clearSession();
+      try {
+        const res = await fetch('/api/v1/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: state.refreshToken })
+        });
+        if (!res.ok) {
+          // Clear session only for explicit auth failures.
+          if (res.status === 400 || res.status === 401) {
+            clearSession();
+          }
+          return false;
+        }
+        const json = await res.json();
+        if (!json.access_token) {
+          return false;
+        }
+        saveSession(json);
+        return true;
+      } catch (_) {
+        // Temporary network/proxy hiccup: keep current session state.
         return false;
       }
-      const json = await res.json();
-      if (!json.access_token) {
-        clearSession();
-        return false;
-      }
-      saveSession(json);
-      return true;
     }
 
     async function ensureAccessToken() {
@@ -2857,8 +2864,12 @@
       const res = await apiFetch('/api/v1/me', { headers: headers() });
       if (!res.ok) {
         state.me = null;
-        clearSession();
-        setStatus('Session invalid - guest mode', 'bad');
+        if (res.status === 401) {
+          clearSession();
+          setStatus('Session expired - guest mode', 'bad');
+        } else {
+          setStatus('Session check temporary failed', 'warn');
+        }
         syncRoleUI();
         return;
       }

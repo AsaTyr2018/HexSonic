@@ -590,6 +590,9 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	form := url.Values{}
 	form.Set("grant_type", "password")
 	form.Set("client_id", s.cfg.OIDCClientID)
+	if scopes := strings.TrimSpace(s.cfg.OIDCScopes); scopes != "" {
+		form.Set("scope", scopes)
+	}
 	if strings.TrimSpace(s.cfg.OIDCClientSecret) != "" {
 		form.Set("client_secret", s.cfg.OIDCClientSecret)
 	}
@@ -4769,6 +4772,9 @@ func (s *Server) verifyUserCredentials(ctx context.Context, username, password s
 	form := url.Values{}
 	form.Set("grant_type", "password")
 	form.Set("client_id", s.cfg.OIDCClientID)
+	if scopes := strings.TrimSpace(s.cfg.OIDCScopes); scopes != "" {
+		form.Set("scope", scopes)
+	}
 	if strings.TrimSpace(s.cfg.OIDCClientSecret) != "" {
 		form.Set("client_secret", s.cfg.OIDCClientSecret)
 	}
