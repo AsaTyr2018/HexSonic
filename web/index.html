@@ -865,6 +865,15 @@
       background-position: center;
       border-radius: 8px;
       flex: 0 0 auto;
+      cursor: pointer;
+      transition: transform .12s ease, border-color .12s ease, box-shadow .12s ease;
+    }
+    .thumb:hover,
+    .thumb:focus-visible {
+      border-color: #6fa7ff;
+      box-shadow: 0 0 0 2px rgba(111, 167, 255, 0.18);
+      transform: translateY(-1px);
+      outline: none;
     }
     .np-title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .np-sub { font-size: 12px; color: #9db0c8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1633,7 +1642,7 @@
 
   <footer id="playerBar" class="player">
     <div class="nowplaying">
-      <div class="thumb"></div>
+      <div class="thumb" id="playerThumb" role="button" tabindex="0" title="Open album"></div>
       <div style="min-width:0;">
         <div class="np-title" id="npTitle">Nothing playing</div>
         <div class="np-sub" id="npSub">Select a track and hit play</div>
@@ -1800,6 +1809,8 @@
     const ICON_PAUSE = '\u23f8';
     const ICON_MUTE = '\u2297';
     const ICON_UNMUTE = '\u2299';
+    const ICON_DETAIL = '\u2139';
+    const ICON_PLAYLIST = '\u2261';
     const PLAYER_BRIDGE_CHANNEL = 'hexsonic-player-bridge-v1';
     const PLAYER_TICK_MS = 34;
 
@@ -2633,6 +2644,12 @@
       return !!state.me;
     }
 
+    function canManageTrack(track) {
+      if (!state.me || !track) return false;
+      if (canAdmin()) return true;
+      return String(track.owner_sub || '') === String(state.me.subject || '');
+    }
+
     function syncRoleUI() {
       const loggedIn = !!state.me;
       $('btnOpenLogin').classList.toggle('hidden', loggedIn);
@@ -2683,6 +2700,14 @@
 
     function hidePlayer() {
       $('playerBar').classList.remove('hidden');
+    }
+
+    async function openAlbumFromPlayerThumb() {
+      const track = currentTrackFromQueue();
+      if (!track) return;
+      const album = findAlbumForTrack(track);
+      if (!album || !album.id) return;
+      await selectAlbum(album.id);
     }
 
     function updatePlayerButtons() {
@@ -3595,10 +3620,10 @@
           <td>${shortVisibility(t.visibility)}</td>
           <td>
             <span class="track-actions">
-              <button class="btn" data-play="${t.id}" title="Play">P</button>
-              <button class="btn" data-detail="${t.id}" title="Details">I</button>
-              ${canCreatePlaylists() ? `<button class="btn" data-addpl="${t.id}" title="Add Playlist">L</button>` : ''}
-              ${canManage() ? `<button class="btn" data-manage="${t.id}" title="Manage">M</button>` : ''}
+              <button class="btn" data-play="${t.id}" title="Play" aria-label="Play">${ICON_PLAY}</button>
+              <button class="btn" data-detail="${t.id}" title="Details" aria-label="Details">${ICON_DETAIL}</button>
+              ${canCreatePlaylists() ? `<button class="btn" data-addpl="${t.id}" title="Add to Playlist" aria-label="Add to Playlist">${ICON_PLAYLIST}</button>` : ''}
+              ${canManageTrack(t) ? `<button class="btn" data-manage="${t.id}" title="Manage" aria-label="Manage">M</button>` : ''}
             </span>
           </td>
         `;
@@ -5525,6 +5550,12 @@
       $('btnPlayPause').onclick = async () => applyPlayerControl('play_pause');
       $('btnPrev').onclick = async () => applyPlayerControl('prev');
       $('btnNext').onclick = async () => applyPlayerControl('next');
+      $('playerThumb').onclick = openAlbumFromPlayerThumb;
+      $('playerThumb').addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        await openAlbumFromPlayerThumb();
+      });
 
       $('volumeRange').oninput = (e) => {
         applyPlayerControl('volume', Number(e.target.value));
