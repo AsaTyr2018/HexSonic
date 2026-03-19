@@ -613,6 +613,46 @@
       padding: 10px 12px;
       overflow: auto;
     }
+    .playlist-picker-layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 340px) 1fr;
+      gap: 12px;
+    }
+    .playlist-picker-create {
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+    .playlist-picker-list {
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+    .playlist-picker-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid #455064;
+      border-radius: 10px;
+      background: #28303a;
+      padding: 10px 12px;
+    }
+    .playlist-picker-item-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #eef4ff;
+    }
+    .playlist-picker-item-meta {
+      font-size: 12px;
+      color: #9db0c8;
+      margin-top: 2px;
+    }
+    @media (max-width: 860px) {
+      .playlist-picker-layout {
+        grid-template-columns: 1fr;
+      }
+    }
     .invite-register-wrap {
       padding: 20px;
       display: grid;
@@ -1070,7 +1110,7 @@
         <div id="signupInviteNote" class="muted hidden" style="grid-column:1 / -1; font-size:12px;"></div>
       </div>
 
-      <div class="toolbar">
+      <div class="toolbar" id="libraryToolbar">
         <input id="searchInput" placeholder="Search album/track" />
         <select id="filterVisibility">
           <option value="all">All visible</option>
@@ -1640,6 +1680,39 @@
     </div>
   </div>
 
+  <div id="playlistPickerModalOverlay" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <div class="panel-title" style="margin:0;">Add to Playlist</div>
+          <div id="playlistPickerMeta" class="muted">Select a playlist for the pending tracks.</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn" id="btnPlaylistPickerRefresh">Refresh</button>
+          <button class="btn" id="btnPlaylistPickerClose">Close</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="playlist-picker-layout">
+          <div class="playlist-picker-create">
+            <div class="panel-title" style="margin:0;">Create Playlist</div>
+            <input id="playlistPickerName" placeholder="New playlist name" />
+            <select id="playlistPickerVisibility">
+              <option value="private">private</option>
+              <option value="public">public</option>
+            </select>
+            <button class="btn" id="btnPlaylistPickerCreate">Create and add tracks</button>
+            <div class="muted">A new playlist can be created directly from this modal.</div>
+          </div>
+          <div>
+            <div class="panel-title" style="margin:0 0 8px;">Your Playlists</div>
+            <div id="playlistPickerList" class="playlist-picker-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <footer id="playerBar" class="player">
     <div class="nowplaying">
       <div class="thumb" id="playerThumb" role="button" tabindex="0" title="Open album"></div>
@@ -1783,6 +1856,7 @@
       playlists: [],
       selectedPlaylistId: 0,
       selectedPlaylistTracks: [],
+      playlistPickerTrackIDs: [],
       playlistDockOpen: localStorage.getItem('hex_playlist_dock_open') === '1',
       albumCoverURLs: {},
       currentView: 'albums',
@@ -3248,11 +3322,17 @@
       if (!res.ok) {
         state.playlists = [];
         renderPlaylists();
+        if (!$('playlistPickerModalOverlay').classList.contains('hidden')) {
+          renderPlaylistPickerModal();
+        }
         return;
       }
       const json = await res.json();
       state.playlists = json.playlists || [];
       renderPlaylists();
+      if (!$('playlistPickerModalOverlay').classList.contains('hidden')) {
+        renderPlaylistPickerModal();
+      }
       if (state.selectedPlaylistId) {
         const still = state.playlists.find((p) => Number(p.id) === Number(state.selectedPlaylistId));
         if (still) await selectPlaylist(still.id);
@@ -3456,6 +3536,120 @@
       switchView('playlists');
     }
 
+    function closePlaylistPickerModal() {
+      state.playlistPickerTrackIDs = [];
+      $('playlistPickerModalOverlay').classList.add('hidden');
+      $('playlistPickerMeta').textContent = 'Select a playlist for the pending tracks.';
+      $('playlistPickerName').value = '';
+      $('playlistPickerVisibility').value = 'private';
+      $('playlistPickerList').innerHTML = '';
+    }
+
+    function renderPlaylistPickerModal() {
+      const listRoot = $('playlistPickerList');
+      const mine = ownPlaylists();
+      listRoot.innerHTML = '';
+      if (!mine.length) {
+        listRoot.innerHTML = '<div class="muted">No playlists yet. Create one on the left.</div>';
+        return;
+      }
+      mine.forEach((p) => {
+        const item = document.createElement('div');
+        item.className = 'playlist-picker-item';
+        item.innerHTML = `
+          <div>
+            <div class="playlist-picker-item-title">${escapeHtml(p.name || 'Playlist')}</div>
+            <div class="playlist-picker-item-meta">${escapeHtml(p.visibility || 'private')} · ${Number(p.track_count || 0)} tracks</div>
+          </div>
+          <button class="btn" data-pick-playlist="${p.id}">Add here</button>
+        `;
+        const pickBtn = item.querySelector('[data-pick-playlist]');
+        if (pickBtn) {
+          pickBtn.onclick = async () => {
+            await addTrackIDsToPlaylist(state.playlistPickerTrackIDs.slice(), Number(p.id));
+          };
+        }
+        listRoot.appendChild(item);
+      });
+    }
+
+    async function openPlaylistPickerModal(trackIDs) {
+      const ids = (trackIDs || []).map((id) => String(id || '').trim()).filter(Boolean);
+      if (!ids.length) return;
+      if (!canCreatePlaylists()) {
+        alert('Login required.');
+        return;
+      }
+      state.playlistPickerTrackIDs = ids;
+      $('playlistPickerMeta').textContent = `${ids.length} track${ids.length === 1 ? '' : 's'} ready to add.`;
+      $('playlistPickerModalOverlay').classList.remove('hidden');
+      await loadPlaylists();
+      renderPlaylistPickerModal();
+    }
+
+    async function addTrackIDsToPlaylist(trackIDs, playlistID) {
+      const ids = (trackIDs || []).map((id) => String(id || '').trim()).filter(Boolean);
+      if (!ids.length) return;
+      if (!Number.isFinite(playlistID) || playlistID <= 0) {
+        alert('Invalid playlist id.');
+        return;
+      }
+      for (const trackID of ids) {
+        const res = await apiFetch(`/api/v1/playlists/${playlistID}/tracks`, {
+          method: 'POST',
+          headers: headers({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ track_id: trackID })
+        });
+        if (!res.ok) {
+          alert(`Add track failed (${res.status}).`);
+          return;
+        }
+      }
+      await loadPlaylists();
+      if (Number(state.selectedPlaylistId) === Number(playlistID)) {
+        await selectPlaylist(playlistID);
+      } else {
+        renderPlaylistPickerModal();
+      }
+      closePlaylistPickerModal();
+    }
+
+    async function createPlaylistFromPicker() {
+      if (!canCreatePlaylists()) {
+        alert('Login required.');
+        return;
+      }
+      const ids = state.playlistPickerTrackIDs.slice();
+      if (!ids.length) return;
+      const name = $('playlistPickerName').value.trim();
+      if (!name) {
+        alert('Playlist name required.');
+        return;
+      }
+      const res = await apiFetch('/api/v1/playlists', {
+        method: 'POST',
+        headers: headers({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ name, visibility: $('playlistPickerVisibility').value })
+      });
+      if (!res.ok) {
+        alert(`Create playlist failed (${res.status}).`);
+        return;
+      }
+      const json = await res.json();
+      const playlistID = Number(json.id || json.playlist_id || 0);
+      if (!Number.isFinite(playlistID) || playlistID <= 0) {
+        await loadPlaylists();
+        const created = ownPlaylists().find((p) => String(p.name || '').trim() === name);
+        if (!created) {
+          alert('Playlist created, but the new playlist id could not be resolved.');
+          return;
+        }
+        await addTrackIDsToPlaylist(ids, Number(created.id));
+        return;
+      }
+      await addTrackIDsToPlaylist(ids, playlistID);
+    }
+
     async function deleteSelectedPlaylist() {
       if (!state.selectedPlaylistId) return;
       const ok = confirm('Delete selected playlist?');
@@ -3473,73 +3667,11 @@
     }
 
     async function addTrackToPlaylist(trackID) {
-      if (!canCreatePlaylists()) {
-        alert('Login required.');
-        return;
-      }
-      const mine = ownPlaylists();
-      if (!mine.length) {
-        alert('Create a playlist first.');
-        switchView('playlists');
-        return;
-      }
-      const list = mine.map((p) => `${p.id}: ${p.name}`).join('\n');
-      const raw = prompt(`Playlist ID wählen:\n${list}`);
-      if (!raw) return;
-      const playlistID = Number(raw);
-      if (!Number.isFinite(playlistID) || playlistID <= 0) {
-        alert('Invalid playlist id.');
-        return;
-      }
-      const res = await apiFetch(`/api/v1/playlists/${playlistID}/tracks`, {
-        method: 'POST',
-        headers: headers({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ track_id: trackID })
-      });
-      if (!res.ok) {
-        alert(`Add to playlist failed (${res.status}).`);
-        return;
-      }
-      if (Number(state.selectedPlaylistId) === playlistID) {
-        await selectPlaylist(playlistID);
-      }
+      await openPlaylistPickerModal([trackID]);
     }
 
     async function addTracksToPlaylist(trackIDs) {
-      if (!trackIDs.length) return;
-      if (!canCreatePlaylists()) {
-        alert('Login required.');
-        return;
-      }
-      const mine = ownPlaylists();
-      if (!mine.length) {
-        alert('Create a playlist first.');
-        switchView('playlists');
-        return;
-      }
-      const list = mine.map((p) => `${p.id}: ${p.name}`).join('\n');
-      const raw = prompt(`Playlist ID wählen:\n${list}`);
-      if (!raw) return;
-      const playlistID = Number(raw);
-      if (!Number.isFinite(playlistID) || playlistID <= 0) {
-        alert('Invalid playlist id.');
-        return;
-      }
-      for (const trackID of trackIDs) {
-        const res = await apiFetch(`/api/v1/playlists/${playlistID}/tracks`, {
-          method: 'POST',
-          headers: headers({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ track_id: trackID })
-        });
-        if (!res.ok) {
-          alert(`Add track ${trackID} failed (${res.status}).`);
-          return;
-        }
-      }
-      if (Number(state.selectedPlaylistId) === playlistID) {
-        await selectPlaylist(playlistID);
-      }
-      alert(`Added ${trackIDs.length} tracks to playlist ${playlistID}.`);
+      await openPlaylistPickerModal(trackIDs);
     }
 
     async function removeTrackFromPlaylist(trackID) {
@@ -3577,14 +3709,15 @@
     }
 
     function renderTracksAlbumHeader(rows, hasAlbum) {
-      $('tracksAlbumHero').classList.toggle('hidden', !hasAlbum);
-      $('tracksActionbar').classList.toggle('hidden', !hasAlbum);
-      $('albumSocialPanel').classList.toggle('hidden', !hasAlbum);
+      const activeAlbumContext = hasAlbum && state.currentView === 'tracks';
+      $('tracksAlbumHero').classList.toggle('hidden', !activeAlbumContext);
+      $('tracksActionbar').classList.toggle('hidden', !activeAlbumContext);
+      $('albumSocialPanel').classList.toggle('hidden', !activeAlbumContext);
       const canPlaylist = canCreatePlaylists();
       $('btnTracksPlayNext').classList.toggle('hidden', !canPlaylist);
       $('btnTracksPlayLater').classList.toggle('hidden', !canPlaylist);
       $('btnTracksAddPlaylist').classList.toggle('hidden', !canPlaylist);
-      if (!hasAlbum) return;
+      if (!activeAlbumContext) return;
 
       const total = rows.reduce((sum, t) => sum + (t.duration || 0), 0);
       const avgRating = calcAlbumAvgRating(rows);
@@ -4528,6 +4661,25 @@
       // Deprecated: album bottom detail strip removed from Albums view.
     }
 
+    function syncTracksContextChrome() {
+      const hasAlbumContext = state.currentView === 'tracks' && !!(state.selectedAlbum && Number(state.selectedAlbum.id) === Number(state.tracksAlbumContextID));
+      $('tracksAlbumHero').classList.toggle('hidden', !hasAlbumContext);
+      $('tracksActionbar').classList.toggle('hidden', !hasAlbumContext);
+      $('albumSocialPanel').classList.toggle('hidden', !hasAlbumContext);
+    }
+
+    function syncToolbarForView(view) {
+      const showLibraryToolbar = view === 'albums' || view === 'tracks';
+      $('libraryToolbar').classList.toggle('hidden', !showLibraryToolbar);
+      if (!showLibraryToolbar) return;
+      if (view === 'albums') {
+        $('searchInput').placeholder = 'Search albums';
+        return;
+      }
+      const hasAlbumContext = !!(state.selectedAlbum && Number(state.selectedAlbum.id) === Number(state.tracksAlbumContextID));
+      $('searchInput').placeholder = hasAlbumContext ? 'Search songs in this album' : 'Search songs';
+    }
+
     function renderTrackDetail() {
       const t = state.selectedDetailTrackData;
       if (!t) {
@@ -4706,6 +4858,12 @@
       $('viewJobs').classList.toggle('hidden', view !== 'jobs');
       $('viewUserProfile').classList.toggle('hidden', view !== 'user_profile');
       $('viewInviteRegister').classList.toggle('hidden', view !== 'invite_register');
+      syncToolbarForView(view);
+      if (view === 'tracks') {
+        renderTracks();
+      } else {
+        syncTracksContextChrome();
+      }
       if (view === 'user_track_manage' || view === 'admin_track_manage') {
         applyTrackManageMode(view);
       }
@@ -5432,6 +5590,17 @@
         const v = $('adminInviteLink').value.trim();
         if (!v) return;
         try { await navigator.clipboard.writeText(v); } catch (_) {}
+      };
+      $('btnPlaylistPickerClose').onclick = closePlaylistPickerModal;
+      $('btnPlaylistPickerRefresh').onclick = async () => {
+        await loadPlaylists();
+        renderPlaylistPickerModal();
+      };
+      $('btnPlaylistPickerCreate').onclick = createPlaylistFromPicker;
+      $('playlistPickerModalOverlay').onclick = (e) => {
+        if (e.target && e.target.id === 'playlistPickerModalOverlay') {
+          closePlaylistPickerModal();
+        }
       };
       $('btnAdminSystemRefresh').onclick = loadAdminSystemOverview;
       $('btnAdminLogsRefresh').onclick = loadAdminAuditLogs;
