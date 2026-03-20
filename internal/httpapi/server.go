@@ -167,6 +167,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/grafana", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/grafana/", http.StatusFound) })
 	r.Handle("/prometheus/*", s.adminProxyHandler("/prometheus", s.cfg.PrometheusProxyURL))
 	r.Handle("/grafana/*", s.adminProxyHandler("/grafana", s.cfg.GrafanaProxyURL))
+	r.Handle("/assets/*", http.StripPrefix("/assets/", http.FileServer(http.Dir("web/assets"))))
 	r.Get("/", s.index)
 	r.Get("/register", s.index)
 	r.Handle("/rest", http.HandlerFunc(s.subsonicHandler))
