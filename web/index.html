@@ -931,6 +931,164 @@
       background: #1d2a3d;
     }
     .service-links a:hover { background: #27426a; }
+    .discovery-layout {
+      padding: 12px 10px 0;
+      display: grid;
+      gap: 10px;
+    }
+    .discovery-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(220px, 1fr));
+      gap: 10px;
+      align-items: start;
+    }
+    .discovery-column {
+      border: 1px solid #3b4351;
+      border-radius: 10px;
+      background: #171c24;
+      padding: 8px;
+      display: grid;
+      gap: 8px;
+      align-self: start;
+    }
+    .discovery-column-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .discovery-column-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #eef4ff;
+    }
+    .discovery-column-body {
+      max-height: 430px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .discovery-tabs {
+      display: inline-flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .discovery-tab {
+      border: 1px solid #41526d;
+      background: #1c2738;
+      color: #cddbf0;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .discovery-tab.active {
+      background: #2f61a0;
+      border-color: #7faeff;
+      color: #eef5ff;
+    }
+    .discovery-subsection {
+      display: grid;
+      gap: 6px;
+    }
+    .discovery-subsection + .discovery-subsection {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #293445;
+    }
+    .discovery-subsection-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: #d7e5fb;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .discovery-note {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 68px;
+      font-size: 12px;
+      color: var(--muted);
+      border: 1px solid #344256;
+      border-radius: 10px;
+      background: #1a222d;
+      padding: 10px 12px;
+      line-height: 1.45;
+      display: flex;
+      align-items: center;
+    }
+    .discovery-chip-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .discovery-chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #dce9ff;
+      border: 1px solid #41526d;
+      background: #202b3c;
+    }
+    .discovery-track-list {
+      display: grid;
+      gap: 4px;
+    }
+    .discovery-track-item {
+      border: 1px solid #334055;
+      background: #141b24;
+      border-radius: 8px;
+      padding: 6px 8px;
+      display: grid;
+      gap: 3px;
+    }
+    .discovery-track-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .discovery-track-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #eef4ff;
+    }
+    .discovery-track-meta {
+      font-size: 10px;
+      color: #94a8c5;
+      line-height: 1.25;
+    }
+    .discovery-track-actions {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+    .discovery-track-actions .btn {
+      padding: 2px 6px;
+      min-width: 0;
+      font-size: 11px;
+    }
+    .creator-stats-layout {
+      display: grid;
+      gap: 12px;
+      padding: 12px;
+    }
+    .creator-stats-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .creator-stats-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
     .track-manage-layout {
       display: grid;
       grid-template-columns: 1fr;
@@ -1264,6 +1422,7 @@
       .admin-controls { grid-template-columns: 1fr; }
       .admin-metrics-grid { grid-template-columns: 1fr 1fr; }
       .service-grid { grid-template-columns: 1fr; }
+      .discovery-grid { grid-template-columns: 1fr; }
       .upload-grid { grid-template-columns: 1fr; }
       .playlist-layout { grid-template-columns: 1fr; }
       .playlist-create { grid-template-columns: 1fr; }
@@ -1299,7 +1458,8 @@
     <aside class="sidebar">
       <div class="nav-group">
         <div class="nav-title">Library</div>
-        <button class="nav-item active" data-view="albums">Albums</button>
+        <button class="nav-item active" data-view="discovery">Discovery</button>
+        <button class="nav-item" data-view="albums">Albums</button>
         <button class="nav-item" data-view="tracks">Songs</button>
         <button class="nav-item hidden" id="navPlaylists" data-view="playlists">Playlists</button>
         <button class="nav-item hidden" id="navProfile" data-view="profile">Profile</button>
@@ -1309,6 +1469,7 @@
         <button class="nav-item hidden" id="navUpload" data-view="upload">Upload Center</button>
         <button class="nav-item hidden" id="navUserTrackManage" data-view="user_track_manage">User Track Management</button>
         <button class="nav-item hidden" id="navAlbumManage" data-view="album_manage">Album Management</button>
+        <button class="nav-item hidden" id="navCreatorStats" data-view="creator_stats">Creator Stats</button>
       </div>
       <div class="nav-group" id="navGroupAdmin">
         <div class="nav-title">Admin</div>
@@ -1347,7 +1508,14 @@
         <button class="btn" id="btnReload">Reload</button>
       </div>
 
-      <section id="viewAlbums" class="pane">
+      <section id="viewDiscovery" class="pane">
+        <div class="discovery-layout">
+          <div id="discoverySummary" class="discovery-note">Discovery is loading...</div>
+          <div id="discoveryGrid" class="discovery-grid"></div>
+        </div>
+      </section>
+
+      <section id="viewAlbums" class="pane hidden">
         <div class="albums-grid" id="albumsGrid"></div>
       </section>
 
@@ -1618,6 +1786,29 @@
             <div id="uploadBatchResult" class="muted" style="margin-top:8px; white-space: pre-line;"></div>
             <div class="upload-note">After successful import, transcoding jobs are created automatically.</div>
           </div>
+        </div>
+      </section>
+
+      <section id="viewCreatorStats" class="pane hidden">
+        <div class="creator-stats-layout">
+          <div class="creator-stats-head">
+            <div>
+              <div class="panel-title">Creator Stats</div>
+              <div id="creatorStatsSummary" class="muted">Track how your uploads perform and where discovery traffic comes from.</div>
+            </div>
+            <div class="creator-stats-controls">
+              <select id="creatorStatsWindow">
+                <option value="24h">24h</option>
+                <option value="7d" selected>7 days</option>
+                <option value="30d">30 days</option>
+                <option value="90d">90 days</option>
+                <option value="all">All time</option>
+              </select>
+              <button class="btn" id="btnCreatorStatsRefresh">Refresh</button>
+            </div>
+          </div>
+          <div id="creatorStatsMetrics" class="admin-metrics-grid"></div>
+          <div id="creatorStatsGrid" class="service-grid"></div>
         </div>
       </section>
 
@@ -2095,14 +2286,17 @@
       adminInvites: [],
       publicSettings: { registration_enabled: true },
       adminSystemOverview: null,
+      discovery: null,
+      discoveryTab: 'top',
       myProfile: null,
+      creatorStats: null,
       playlists: [],
       selectedPlaylistId: 0,
       selectedPlaylistTracks: [],
       playlistPickerTrackIDs: [],
       playlistDockOpen: localStorage.getItem('hex_playlist_dock_open') === '1',
       albumCoverURLs: {},
-      currentView: 'albums',
+      currentView: 'discovery',
       queue: [],
       queueIndex: -1,
       nowPlayingTrackId: '',
@@ -2120,7 +2314,8 @@
       popLyricFontPx: Number(localStorage.getItem('hex_pop_lyric_font_px') || '13'),
       popQueueFilter: '',
       popQueueFollowCurrent: localStorage.getItem('hex_pop_queue_follow') !== '0',
-      popVizPrevBins: []
+      popVizPrevBins: [],
+      listeningSession: null
     };
     const ICON_PLAY = '\u25b6';
     const ICON_PAUSE = '\u23f8';
@@ -2984,12 +3179,16 @@
 
       $('navUpload').classList.toggle('hidden', !canUpload());
       $('navAlbumManage').classList.toggle('hidden', !canManage());
+      $('navCreatorStats').classList.toggle('hidden', !canUpload());
       $('navJobs').classList.toggle('hidden', !canAdmin());
 
       if (!canUpload() && !$('viewUpload').classList.contains('hidden')) {
         switchView('albums');
       }
       if (!canManage() && (!$('viewTrackManage').classList.contains('hidden') || !$('viewAlbumManage').classList.contains('hidden'))) {
+        switchView('albums');
+      }
+      if (!canUpload() && !$('viewCreatorStats').classList.contains('hidden')) {
         switchView('albums');
       }
       if (!canAdmin() && !$('viewJobs').classList.contains('hidden')) {
@@ -3439,6 +3638,356 @@
         const okVis = vis === 'all' || a.visibility === vis;
         return okText && okVis;
       });
+    }
+
+    function sourceContextForPlayback(explicit = '') {
+      if (explicit) return explicit;
+      if (state.currentView === 'tracks' && state.selectedAlbum && Number(state.selectedAlbum.id) === Number(state.tracksAlbumContextID)) {
+        return 'album_tracks';
+      }
+      switch (state.currentView) {
+        case 'albums': return 'albums';
+        case 'tracks': return 'tracks';
+        case 'playlists': return 'playlists';
+        case 'track_detail': return 'track_detail';
+        case 'user_profile': return 'user_profile';
+        case 'creator_stats': return 'creator_stats';
+        default: return state.currentView || 'unknown';
+      }
+    }
+
+    async function sendListeningEvent(eventType, trackId, extra = {}) {
+      if (!trackId) return;
+      try {
+        const res = await apiFetch('/api/v1/listening-events', {
+          method: 'POST',
+          headers: headers({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            track_id: trackId,
+            event_type: eventType,
+            source_context: extra.source_context || sourceContextForPlayback(),
+            session_id: extra.session_id || '',
+            playback_seconds: Number(extra.playback_seconds || 0),
+            duration_seconds: Number(extra.duration_seconds || 0)
+          })
+        }, false);
+        if (!res.ok) return;
+      } catch (_) {}
+    }
+
+    function beginListeningSession(track, sourceContext = '') {
+      if (!track || !track.id) return;
+      state.listeningSession = {
+        track_id: track.id,
+        source_context: sourceContextForPlayback(sourceContext),
+        session_id: `sess_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        duration_seconds: Number(track.duration || 0),
+        max_playback_seconds: 0,
+        sent30: false,
+        sent50: false,
+        sentComplete: false
+      };
+      sendListeningEvent('play_start', track.id, {
+        session_id: state.listeningSession.session_id,
+        source_context: state.listeningSession.source_context,
+        duration_seconds: state.listeningSession.duration_seconds
+      });
+    }
+
+    function finalizeListeningSession(reason = 'switch') {
+      const s = state.listeningSession;
+      if (!s || !s.track_id) return;
+      const duration = Number(s.duration_seconds || 0);
+      const played = Number(s.max_playback_seconds || 0);
+      if (!s.sentComplete) {
+        const completed = duration > 0 ? played >= Math.max(30, duration * 0.92) : played >= 180;
+        if (completed) {
+          s.sentComplete = true;
+          sendListeningEvent('play_complete', s.track_id, {
+            session_id: s.session_id,
+            source_context: s.source_context,
+            playback_seconds: played,
+            duration_seconds: duration
+          });
+        } else if (reason !== 'natural_end' && played > 0 && played < Math.min(30, duration > 0 ? duration * 0.25 : 30)) {
+          sendListeningEvent('skip_early', s.track_id, {
+            session_id: s.session_id,
+            source_context: s.source_context,
+            playback_seconds: played,
+            duration_seconds: duration
+          });
+        }
+      }
+      state.listeningSession = null;
+    }
+
+    function updateListeningSession(currentTime, duration) {
+      const s = state.listeningSession;
+      if (!s) return;
+      const cur = Number(currentTime || 0);
+      const dur = Number(duration || s.duration_seconds || 0);
+      if (cur > s.max_playback_seconds) s.max_playback_seconds = cur;
+      if (dur > 0) s.duration_seconds = dur;
+      if (!s.sent30 && cur >= 30) {
+        s.sent30 = true;
+        sendListeningEvent('play_30s', s.track_id, {
+          session_id: s.session_id,
+          source_context: s.source_context,
+          playback_seconds: cur,
+          duration_seconds: dur
+        });
+      }
+      if (!s.sent50 && dur > 0 && (cur / dur) >= 0.5) {
+        s.sent50 = true;
+        sendListeningEvent('play_50_percent', s.track_id, {
+          session_id: s.session_id,
+          source_context: s.source_context,
+          playback_seconds: cur,
+          duration_seconds: dur
+        });
+      }
+      if (!s.sentComplete && dur > 0 && (cur / dur) >= 0.95) {
+        s.sentComplete = true;
+        sendListeningEvent('play_complete', s.track_id, {
+          session_id: s.session_id,
+          source_context: s.source_context,
+          playback_seconds: cur,
+          duration_seconds: dur
+        });
+      }
+    }
+
+    function renderDiscoveryTrackList(rows, sourceLabel) {
+      const items = Array.isArray(rows) ? rows : [];
+      if (!items.length) return '<div class="muted">No tracks yet.</div>';
+      return `<div class="discovery-track-list">${items.slice(0, 8).map((t) => `
+        <div class="discovery-track-item">
+          <div class="discovery-track-top">
+            <div>
+              <div class="discovery-track-title">${escapeHtml(t.title || '-')}</div>
+              <div class="discovery-track-meta">${escapeHtml(t.artist || '-')} · ${escapeHtml(t.album || '-')} · ${escapeHtml(t.genre || '-')}</div>
+            </div>
+            <span class="pill">${Number(t.score || 0).toFixed(0)}</span>
+          </div>
+          <div class="discovery-track-actions">
+            <button class="btn slim" data-discovery-play="${escapeHtml(t.id || '')}" data-discovery-source="${escapeHtml(sourceLabel)}">Play</button>
+            <button class="btn slim" data-discovery-detail="${escapeHtml(t.id || '')}">Details</button>
+            ${canCreatePlaylists() ? `<button class="btn slim" data-discovery-playlist="${escapeHtml(t.id || '')}">${ICON_PLAYLIST}</button>` : ''}
+          </div>
+        </div>
+      `).join('')}</div>`;
+    }
+
+    function renderDiscoveryAlbumList(rows) {
+      const items = Array.isArray(rows) ? rows : [];
+      if (!items.length) return '<div class="muted">No albums yet.</div>';
+      return `<div class="discovery-track-list">${items.slice(0, 6).map((a) => `
+        <div class="discovery-track-item">
+          <div class="discovery-track-top">
+            <div>
+              <div class="discovery-track-title">${escapeHtml(a.title || '-')}</div>
+              <div class="discovery-track-meta">${escapeHtml(a.artist || '-')} · ${escapeHtml(a.genre || '-')} · ${Number(a.track_count || 0)} tracks</div>
+            </div>
+            <span class="pill">${Number(a.score || 0).toFixed(0)}</span>
+          </div>
+          <div class="discovery-track-actions">
+            <button class="btn slim" data-discovery-album="${Number(a.id || 0)}">Open album</button>
+          </div>
+        </div>
+      `).join('')}</div>`;
+    }
+
+    function bindDiscoveryActions() {
+      $('discoveryGrid').querySelectorAll('[data-discovery-tab]').forEach((btn) => {
+        btn.onclick = () => {
+          const tab = btn.getAttribute('data-discovery-tab') || 'top';
+          if (tab !== 'top' && tab !== 'personal') return;
+          state.discoveryTab = tab;
+          renderDiscovery();
+        };
+      });
+      $('discoveryGrid').querySelectorAll('[data-discovery-play]').forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute('data-discovery-play');
+          const source = btn.getAttribute('data-discovery-source') || 'discovery';
+          if (!id) return;
+          const all = state.tracks.slice();
+          await startTrackById(id, all, source);
+        };
+      });
+      $('discoveryGrid').querySelectorAll('[data-discovery-detail]').forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute('data-discovery-detail');
+          if (!id) return;
+          await openTrackDetail(id);
+        };
+      });
+      $('discoveryGrid').querySelectorAll('[data-discovery-playlist]').forEach((btn) => {
+        btn.onclick = async () => {
+          const id = btn.getAttribute('data-discovery-playlist');
+          if (!id) return;
+          await addTrackToPlaylist(id);
+        };
+      });
+      $('discoveryGrid').querySelectorAll('[data-discovery-album]').forEach((btn) => {
+        btn.onclick = async () => {
+          const id = Number(btn.getAttribute('data-discovery-album') || '0');
+          if (!id) return;
+          await selectAlbum(id);
+        };
+      });
+    }
+
+    function renderDiscovery() {
+      const root = $('discoveryGrid');
+      const data = state.discovery || {};
+      const global = data.global || {};
+      const personal = data.personal || {};
+      const favoriteGenres = Array.isArray(personal.favorite_genres) ? personal.favorite_genres : [];
+      const hasPersonal = !!personal.enabled;
+      if (!hasPersonal && state.discoveryTab === 'personal') {
+        state.discoveryTab = 'top';
+      }
+      const songsTab = state.discoveryTab === 'personal' && hasPersonal ? 'personal' : 'top';
+      const songsTitle = songsTab === 'personal' ? 'For You' : 'Top Songs';
+      const songsRows = songsTab === 'personal' ? (personal.recommended_tracks || []) : (global.top_songs || []);
+      const songsSource = songsTab === 'personal' ? 'discovery_personal' : 'discovery_top';
+      const songsBadge = songsTab === 'personal'
+        ? `<span class="pill ok">Personal</span>`
+        : `<span class="pill">${Number((global.top_songs || []).length || 0)} picks</span>`;
+      $('discoverySummary').textContent = personal.enabled
+        ? (personal.summary || 'Personal and global discovery active.')
+        : 'Global discovery is active. Login enables personal recommendations.';
+      root.innerHTML = `
+        <div class="discovery-column">
+          <div class="discovery-column-head">
+            <div class="discovery-column-title">${songsTitle}</div>
+            <div class="discovery-tabs">
+              ${hasPersonal ? `<button class="discovery-tab ${songsTab === 'top' ? 'active' : ''}" data-discovery-tab="top">Top</button><button class="discovery-tab ${songsTab === 'personal' ? 'active' : ''}" data-discovery-tab="personal">For You</button>` : ''}
+              ${songsBadge}
+            </div>
+          </div>
+          ${songsTab === 'personal'
+            ? (favoriteGenres.length ? `<div class="discovery-chip-row">${favoriteGenres.map((g) => `<span class="discovery-chip">${escapeHtml(g)}</span>`).join('')}</div>` : '<div class="muted">No personal genre profile yet.</div>')
+            : '<div class="muted">Most relevant public tracks across the platform.</div>'}
+          <div class="discovery-column-body">
+            ${renderDiscoveryTrackList(songsRows, songsSource)}
+          </div>
+        </div>
+        <div class="discovery-column">
+          <div class="discovery-column-head"><div class="discovery-column-title">Trending</div><span class="pill">Live</span></div>
+          <div class="muted">Movement based on recent listening activity.</div>
+          <div class="discovery-column-body">
+            ${renderDiscoveryTrackList(global.trending_tracks || [], 'discovery_trending')}
+          </div>
+        </div>
+        <div class="discovery-column">
+          <div class="discovery-column-head"><div class="discovery-column-title">Albums</div><span class="pill">${Number((global.top_albums || []).length || 0)} picks</span></div>
+          <div class="muted">Albums that currently pull the strongest listening signals.</div>
+          <div class="discovery-column-body">
+            ${renderDiscoveryAlbumList(global.top_albums || [])}
+          </div>
+        </div>
+      `;
+      bindDiscoveryActions();
+    }
+
+    async function loadDiscovery() {
+      const res = await apiFetch('/api/v1/discovery', { headers: headers() }, false);
+      if (!res.ok) {
+        state.discovery = null;
+        $('discoverySummary').textContent = 'Discovery is temporarily unavailable.';
+        $('discoveryGrid').innerHTML = '';
+        return;
+      }
+      state.discovery = await res.json();
+      renderDiscovery();
+    }
+
+    function renderCreatorStats() {
+      const data = state.creatorStats || {};
+      const ov = data.overview || {};
+      $('creatorStatsSummary').textContent = `Window: ${data.window || '-'} · Updated: ${(data.server_time || '').replace('T', ' ').replace('Z', ' UTC') || '-'}`;
+      $('creatorStatsMetrics').innerHTML = `
+        <div class="metric-card"><div class="metric-label">Tracks</div><div class="metric-value">${Number(ov.tracks_total || 0)}</div></div>
+        <div class="metric-card"><div class="metric-label">Albums</div><div class="metric-value">${Number(ov.albums_total || 0)}</div></div>
+        <div class="metric-card"><div class="metric-label">Total Plays</div><div class="metric-value">${Number(ov.plays_total || 0)}</div></div>
+        <div class="metric-card"><div class="metric-label">Unique Listeners</div><div class="metric-value">${Number(ov.unique_listeners || 0)}</div></div>
+        <div class="metric-card"><div class="metric-label">Qualified Listens</div><div class="metric-value">${Number(ov.qualified_listens || 0)}</div></div>
+        <div class="metric-card"><div class="metric-label">Completed</div><div class="metric-value">${Number(ov.completed_listens || 0)}</div></div>
+        <div class="metric-card"><div class="metric-label">Playlist Adds</div><div class="metric-value">${Number(ov.playlist_adds || 0)}</div></div>
+        <div class="metric-card"><div class="metric-label">Avg Rating</div><div class="metric-value">${Number(ov.avg_rating || 0).toFixed(1)}</div></div>
+      `;
+      const renderRows = (rows, kind) => {
+        const list = Array.isArray(rows) ? rows : [];
+        if (!list.length) return '<tr><td colspan="4" class="muted">No data in this window.</td></tr>';
+        return list.map((row, idx) => `
+          <tr>
+            <td>${idx + 1}. ${escapeHtml(row.title || '-')}</td>
+            <td>${escapeHtml(row.artist || '-')}</td>
+            <td>${escapeHtml(row.genre || '-')}</td>
+            <td style="text-align:right;">${Number(row.score || 0).toFixed(0)}</td>
+          </tr>
+        `).join('');
+      };
+      const renderSourceRows = (rows) => {
+        const list = Array.isArray(rows) ? rows : [];
+        if (!list.length) return '<tr><td colspan="2" class="muted">No source data.</td></tr>';
+        return list.map((row) => `
+          <tr>
+            <td>${escapeHtml(row.source_context || 'unknown')}</td>
+            <td style="text-align:right;">${Number(row.events || 0)}</td>
+          </tr>
+        `).join('');
+      };
+      $('creatorStatsGrid').innerHTML = `
+        <div class="service-card">
+          <div class="service-head"><b>Top Tracks</b><span class="pill">${Number((data.top_tracks || []).length || 0)} rows</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Track</th><th>Artist</th><th>Genre</th><th style="text-align:right;">Score</th></tr></thead>
+              <tbody>${renderRows(data.top_tracks || [], 'track')}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="service-card">
+          <div class="service-head"><b>Top Albums</b><span class="pill">${Number((data.top_albums || []).length || 0)} rows</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Album</th><th>Artist</th><th>Genre</th><th style="text-align:right;">Score</th></tr></thead>
+              <tbody>${renderRows(data.top_albums || [], 'album')}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="service-card">
+          <div class="service-head"><b>Traffic Sources</b><span class="pill">Discovery</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Source</th><th style="text-align:right;">Events</th></tr></thead>
+              <tbody>${renderSourceRows(data.sources || [])}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
+    async function loadCreatorStats() {
+      if (!canUpload()) {
+        $('creatorStatsSummary').textContent = 'Creator badge or admin role required.';
+        $('creatorStatsMetrics').innerHTML = '';
+        $('creatorStatsGrid').innerHTML = '';
+        return;
+      }
+      const windowValue = $('creatorStatsWindow').value || '7d';
+      const res = await apiFetch(`/api/v1/creator/stats?window=${encodeURIComponent(windowValue)}`, { headers: headers() });
+      if (!res.ok) {
+        $('creatorStatsSummary').textContent = `Creator stats unavailable (${res.status}).`;
+        $('creatorStatsMetrics').innerHTML = '';
+        $('creatorStatsGrid').innerHTML = '';
+        return;
+      }
+      state.creatorStats = await res.json();
+      renderCreatorStats();
     }
 
     function renderAlbums() {
@@ -5027,6 +5576,7 @@
         id: a.id,
         title: a.title,
         artist: a.artist,
+        genre: a.genre || '',
         visibility: a.visibility,
         cover_path: a.cover_path || '',
         owner_sub: a.owner_sub || '',
@@ -5049,6 +5599,7 @@
       }
 
       applyFilters();
+      await loadDiscovery();
       renderAlbums();
       renderTracks();
       renderAlbumDetail();
@@ -5061,6 +5612,9 @@
       await loadManageData();
       await loadPlaylists();
       await loadMyProfile();
+      if (canUpload() && !$('viewCreatorStats').classList.contains('hidden')) {
+        await loadCreatorStats();
+      }
       if (canAdmin()) {
         await loadAdminUsers();
         if (!$('viewAdminSystem').classList.contains('hidden')) {
@@ -5100,16 +5654,17 @@
     }
 
     function allowedViewOrDefault(view) {
-      if (view === 'playlists' && !canCreatePlaylists()) view = 'albums';
-      if (view === 'profile' && !state.me) view = 'albums';
-      if ((view === 'admin_users' || view === 'admin_system' || view === 'admin_logs') && !canAdmin()) view = 'albums';
-      if (view === 'upload' && !canUpload()) view = 'albums';
-      if ((view === 'user_track_manage' || view === 'admin_track_manage' || view === 'album_manage') && !canManage()) view = 'albums';
-      if (view === 'admin_track_manage' && !canAdmin()) view = 'albums';
-      if (view === 'jobs' && !canAdmin()) view = 'albums';
-      if (view === 'invite_register' && !state.inviteToken) view = 'albums';
-      const valid = new Set(['albums', 'tracks', 'playlists', 'profile', 'admin_users', 'admin_system', 'admin_logs', 'track_detail', 'upload', 'user_track_manage', 'admin_track_manage', 'album_manage', 'jobs', 'user_profile', 'invite_register']);
-      if (!valid.has(view)) view = 'albums';
+      if (view === 'playlists' && !canCreatePlaylists()) view = 'discovery';
+      if (view === 'profile' && !state.me) view = 'discovery';
+      if ((view === 'admin_users' || view === 'admin_system' || view === 'admin_logs') && !canAdmin()) view = 'discovery';
+      if (view === 'upload' && !canUpload()) view = 'discovery';
+      if ((view === 'user_track_manage' || view === 'admin_track_manage' || view === 'album_manage') && !canManage()) view = 'discovery';
+      if (view === 'admin_track_manage' && !canAdmin()) view = 'discovery';
+      if (view === 'jobs' && !canAdmin()) view = 'discovery';
+      if (view === 'creator_stats' && !canUpload()) view = 'discovery';
+      if (view === 'invite_register' && !state.inviteToken) view = 'discovery';
+      const valid = new Set(['discovery', 'albums', 'tracks', 'playlists', 'profile', 'admin_users', 'admin_system', 'admin_logs', 'track_detail', 'upload', 'user_track_manage', 'admin_track_manage', 'album_manage', 'creator_stats', 'jobs', 'user_profile', 'invite_register']);
+      if (!valid.has(view)) view = 'discovery';
       return view;
     }
 
@@ -5117,7 +5672,7 @@
       const raw = (window.location.hash || '').replace(/^#/, '').trim();
       if (!raw) {
         if (state.inviteToken && window.location.pathname.startsWith('/register')) return 'invite_register';
-        return 'albums';
+        return 'discovery';
       }
       if (raw.startsWith('user_profile/')) {
         state.selectedUserSub = decodeURIComponent(raw.slice('user_profile/'.length));
@@ -5131,6 +5686,7 @@
       state.currentView = view;
 
       document.querySelectorAll('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.view === view));
+      $('viewDiscovery').classList.toggle('hidden', view !== 'discovery');
       $('viewAlbums').classList.toggle('hidden', view !== 'albums');
       $('viewTracks').classList.toggle('hidden', view !== 'tracks');
       $('viewPlaylists').classList.toggle('hidden', view !== 'playlists');
@@ -5140,6 +5696,7 @@
       $('viewAdminLogs').classList.toggle('hidden', view !== 'admin_logs');
       $('viewTrackDetail').classList.toggle('hidden', view !== 'track_detail');
       $('viewUpload').classList.toggle('hidden', view !== 'upload');
+      $('viewCreatorStats').classList.toggle('hidden', view !== 'creator_stats');
       $('viewTrackManage').classList.toggle('hidden', !(view === 'user_track_manage' || view === 'admin_track_manage'));
       $('viewAlbumManage').classList.toggle('hidden', view !== 'album_manage');
       $('viewJobs').classList.toggle('hidden', view !== 'jobs');
@@ -5167,6 +5724,9 @@
       if (view === 'profile' && state.me) {
         loadMyProfile();
       }
+      if (view === 'creator_stats' && canUpload()) {
+        loadCreatorStats();
+      }
       if (view === 'jobs' && canAdmin()) {
         loadJobs();
       }
@@ -5191,9 +5751,12 @@
       return await res.json();
     }
 
-    async function startTrackById(trackId, sourceList = state.filteredTracks) {
+    async function startTrackById(trackId, sourceList = state.filteredTracks, sourceContext = '') {
       const t = sourceList.find((x) => x.id === trackId);
       if (!t) return;
+      if (state.listeningSession && state.listeningSession.track_id !== trackId) {
+        finalizeListeningSession('switch');
+      }
       const signed = await signStream(trackId, 'mp3');
       if (!signed) {
         alert('Play requires login and permission for this track.');
@@ -5208,6 +5771,7 @@
       audio.src = `/api/v1/stream/${trackId}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
       await resumeAudioContextIfNeeded();
       await audio.play();
+      beginListeningSession(t, sourceContext);
       await loadTrackLyrics(trackId);
 
       updatePlayerButtons();
@@ -5758,6 +6322,7 @@
     }
 
     async function logout() {
+      finalizeListeningSession('logout');
       state.me = null;
       clearSession();
       clearAlbumCoverURLs();
@@ -5899,6 +6464,8 @@
       $('btnProfilePasswordSave').onclick = updateMyPassword;
       $('btnProfileSubsonicSave').onclick = updateMySubsonicPassword;
       $('btnProfileSubsonicDelete').onclick = deleteMySubsonicPassword;
+      $('btnCreatorStatsRefresh').onclick = loadCreatorStats;
+      $('creatorStatsWindow').onchange = loadCreatorStats;
       $('adminUserSearch').addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
@@ -6039,10 +6606,12 @@
         $('seekRange').value = Math.round(p * 1000);
         $('elapsedLabel').textContent = fmt(audio.currentTime);
         $('durationLabel').textContent = fmt(audio.duration || 0);
+        updateListeningSession(audio.currentTime, audio.duration || 0);
         emitPlayerState(false);
       };
       audio.onended = async () => {
         if (!state.queue.length) return;
+        finalizeListeningSession('natural_end');
         state.queueIndex = (state.queueIndex + 1) % state.queue.length;
         await startTrackById(state.queue[state.queueIndex].id, state.queue);
       };
@@ -6059,7 +6628,18 @@
         updatePlayerButtons();
         emitPlayerState(false);
       };
-      audio.onseeked = () => emitPlayerState(false);
+      audio.onseeked = () => {
+        const s = state.listeningSession;
+        if (s && s.track_id) {
+          sendListeningEvent('seek', s.track_id, {
+            session_id: s.session_id,
+            source_context: s.source_context,
+            playback_seconds: Number(audio.currentTime || 0),
+            duration_seconds: Number(audio.duration || 0)
+          });
+        }
+        emitPlayerState(false);
+      };
     }
 
     async function boot() {

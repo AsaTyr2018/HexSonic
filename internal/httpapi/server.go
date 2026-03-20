@@ -44,11 +44,11 @@ import (
 )
 
 type Server struct {
-	cfg      config.Config
-	db       *pgxpool.Pool
-	store    *storage.Store
-	signer   *security.Signer
-	verifier *auth.Verifier
+	cfg               config.Config
+	db                *pgxpool.Pool
+	store             *storage.Store
+	signer            *security.Signer
+	verifier          *auth.Verifier
 	debugLogCleanupMu sync.Mutex
 	lastDebugLogSweep time.Time
 }
@@ -56,20 +56,20 @@ type Server struct {
 var registerMetricsOnce sync.Once
 
 type Track struct {
-	ID         string  `json:"id"`
-	Title      string  `json:"title"`
-	Artist     string  `json:"artist"`
-	Album      string  `json:"album"`
-	Genre      string  `json:"genre"`
-	TrackNo    int     `json:"track_number"`
-	Rating     float64 `json:"rating"`
-	Duration   float64 `json:"duration_seconds"`
-	Visibility string  `json:"visibility"`
-	OwnerSub   string  `json:"owner_sub"`
-	Uploader   string  `json:"uploader_name"`
-	HasLyricsSRT bool   `json:"has_lyrics_srt"`
-	HasLyricsTXT bool   `json:"has_lyrics_txt"`
-	Created    string  `json:"created_at"`
+	ID           string  `json:"id"`
+	Title        string  `json:"title"`
+	Artist       string  `json:"artist"`
+	Album        string  `json:"album"`
+	Genre        string  `json:"genre"`
+	TrackNo      int     `json:"track_number"`
+	Rating       float64 `json:"rating"`
+	Duration     float64 `json:"duration_seconds"`
+	Visibility   string  `json:"visibility"`
+	OwnerSub     string  `json:"owner_sub"`
+	Uploader     string  `json:"uploader_name"`
+	HasLyricsSRT bool    `json:"has_lyrics_srt"`
+	HasLyricsTXT bool    `json:"has_lyrics_txt"`
+	Created      string  `json:"created_at"`
 }
 
 func New(cfg config.Config, db *pgxpool.Pool, store *storage.Store, signer *security.Signer, verifier *auth.Verifier) *Server {
@@ -175,6 +175,7 @@ func (s *Server) Router() http.Handler {
 		api.Post("/auth/login", s.login)
 		api.Post("/auth/refresh", s.refresh)
 		api.Post("/auth/signup", s.signup)
+		api.Get("/discovery", s.discoveryOverview)
 		api.Get("/public/settings", s.publicSettings)
 		api.Get("/albums", s.listAlbums)
 		api.Get("/albums/{albumID}/comments", s.listAlbumComments)
@@ -191,19 +192,20 @@ func (s *Server) Router() http.Handler {
 		api.Get("/playlists", s.listPlaylists)
 		api.Get("/playlists/{playlistID}", s.getPlaylist)
 		api.Get("/playlists/{playlistID}/tracks", s.listPlaylistTracks)
+		api.Post("/listening-events", s.recordListeningEvent)
 
 		api.Group(func(priv chi.Router) {
 			priv.Use(auth.Required(s.verifier))
 			priv.Get("/me", s.me)
-				priv.Get("/me/profile", s.meProfileGet)
-				priv.Patch("/me/profile", s.meProfileUpdate)
-				priv.Post("/me/avatar", s.meAvatarUpload)
-				priv.Post("/me/password", s.mePasswordUpdate)
-				priv.Post("/me/subsonic-password", s.meSubsonicPasswordUpdate)
-				priv.Delete("/me/subsonic-password", s.meSubsonicPasswordDelete)
-				priv.Post("/albums/{albumID}/comments", s.createAlbumComment)
-				priv.Post("/albums/{albumID}/cover-sign", s.signAlbumCover)
-				priv.Post("/tracks/{trackID}/comments", s.createComment)
+			priv.Get("/me/profile", s.meProfileGet)
+			priv.Patch("/me/profile", s.meProfileUpdate)
+			priv.Post("/me/avatar", s.meAvatarUpload)
+			priv.Post("/me/password", s.mePasswordUpdate)
+			priv.Post("/me/subsonic-password", s.meSubsonicPasswordUpdate)
+			priv.Delete("/me/subsonic-password", s.meSubsonicPasswordDelete)
+			priv.Post("/albums/{albumID}/comments", s.createAlbumComment)
+			priv.Post("/albums/{albumID}/cover-sign", s.signAlbumCover)
+			priv.Post("/tracks/{trackID}/comments", s.createComment)
 			priv.Post("/tracks/{trackID}/rating", s.rateTrack)
 			priv.Post("/users/{userSub}/comments", s.createUserProfileComment)
 			priv.Post("/follow/{userSub}", s.followUser)
@@ -213,6 +215,7 @@ func (s *Server) Router() http.Handler {
 			priv.Delete("/playlists/{playlistID}", s.deletePlaylist)
 			priv.Post("/playlists/{playlistID}/tracks", s.addPlaylistTrack)
 			priv.Delete("/playlists/{playlistID}/tracks/{trackID}", s.removePlaylistTrack)
+			priv.Get("/creator/stats", s.creatorStats)
 		})
 
 		api.Group(func(uploader chi.Router) {
@@ -249,11 +252,11 @@ func (s *Server) Router() http.Handler {
 			admin.Get("/admin/roles", s.adminListRoles)
 			admin.Patch("/admin/users/{userID}", s.adminUpdateUser)
 			admin.Delete("/admin/users/{userID}", s.adminDeleteUser)
-				admin.Get("/admin/system/overview", s.adminSystemOverview)
-				admin.Get("/admin/logs", s.adminListAuditLogs)
-				admin.Get("/admin/debug-logs", s.adminListDebugLogs)
-				admin.Post("/admin/proxy-session", s.adminCreateProxySession)
-				admin.Get("/admin/transcode-jobs", s.adminListJobs)
+			admin.Get("/admin/system/overview", s.adminSystemOverview)
+			admin.Get("/admin/logs", s.adminListAuditLogs)
+			admin.Get("/admin/debug-logs", s.adminListDebugLogs)
+			admin.Post("/admin/proxy-session", s.adminCreateProxySession)
+			admin.Get("/admin/transcode-jobs", s.adminListJobs)
 			admin.Patch("/admin/tracks/{trackID}/visibility", s.adminSetVisibility)
 			admin.Delete("/admin/tracks/{trackID}", s.adminDeleteTrack)
 		})
@@ -293,6 +296,131 @@ func (s *Server) apiIndex(w http.ResponseWriter, r *http.Request) {
 			"/api/v1/tracks/import-batch",
 		},
 	})
+}
+
+func normalizedSourceContext(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if v == "" {
+		return "unknown"
+	}
+	if len(v) > 64 {
+		v = v[:64]
+	}
+	var b strings.Builder
+	for _, ch := range v {
+		switch {
+		case ch >= 'a' && ch <= 'z':
+			b.WriteRune(ch)
+		case ch >= '0' && ch <= '9':
+			b.WriteRune(ch)
+		case ch == '_' || ch == '-' || ch == '/':
+			b.WriteRune(ch)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	out := strings.Trim(b.String(), "_-/")
+	if out == "" {
+		return "unknown"
+	}
+	return out
+}
+
+func listeningEventAllowed(v string) bool {
+	switch strings.TrimSpace(v) {
+	case "play_start", "play_30s", "play_50_percent", "play_complete", "skip_early", "seek", "rating", "playlist_add":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseStatsWindow(raw string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "24h", "1d":
+		return "24h", "now() - interval '24 hour'"
+	case "7d", "":
+		return "7d", "now() - interval '7 day'"
+	case "30d":
+		return "30d", "now() - interval '30 day'"
+	case "90d":
+		return "90d", "now() - interval '90 day'"
+	case "all":
+		return "all", ""
+	default:
+		return "30d", "now() - interval '30 day'"
+	}
+}
+
+func (s *Server) recordBehaviorEvent(ctx context.Context, userSub, trackID, eventType, sourceContext string, playbackSeconds, durationSeconds float64, sessionID string) error {
+	trackID = strings.TrimSpace(trackID)
+	if trackID == "" || !listeningEventAllowed(eventType) {
+		return nil
+	}
+	var albumID *int64
+	var aid int64
+	if err := s.db.QueryRow(ctx, `SELECT COALESCE(album_id,0) FROM tracks WHERE id=$1`, trackID).Scan(&aid); err == nil && aid > 0 {
+		albumID = &aid
+	}
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO listening_events(track_id, album_id, user_sub, session_id, event_type, source_context, playback_seconds, duration_seconds)
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8)
+	`, trackID, albumID, strings.TrimSpace(userSub), strings.TrimSpace(sessionID), strings.TrimSpace(eventType), normalizedSourceContext(sourceContext), playbackSeconds, durationSeconds)
+	return err
+}
+
+func (s *Server) scanTrackCards(rows pgx.Rows) ([]map[string]any, error) {
+	defer rows.Close()
+	out := make([]map[string]any, 0, 32)
+	for rows.Next() {
+		var trackID, title, artist, album, genre, visibility, ownerSub, uploader, reason string
+		var rating, duration, score float64
+		if err := rows.Scan(&trackID, &title, &artist, &album, &genre, &rating, &duration, &visibility, &ownerSub, &uploader, &score, &reason); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"id":               trackID,
+			"title":            title,
+			"artist":           artist,
+			"album":            album,
+			"genre":            genre,
+			"rating":           rating,
+			"duration_seconds": duration,
+			"visibility":       visibility,
+			"owner_sub":        ownerSub,
+			"uploader_name":    uploader,
+			"score":            score,
+			"reason":           reason,
+		})
+	}
+	return out, rows.Err()
+}
+
+func (s *Server) scanAlbumCards(rows pgx.Rows) ([]map[string]any, error) {
+	defer rows.Close()
+	out := make([]map[string]any, 0, 24)
+	for rows.Next() {
+		var albumID int64
+		var title, artist, genre, visibility, ownerSub, uploader, reason string
+		var trackCount int64
+		var score float64
+		if err := rows.Scan(&albumID, &title, &artist, &genre, &visibility, &ownerSub, &uploader, &trackCount, &score, &reason); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"id":            albumID,
+			"title":         title,
+			"artist":        artist,
+			"genre":         genre,
+			"visibility":    visibility,
+			"owner_sub":     ownerSub,
+			"uploader_name": uploader,
+			"track_count":   trackCount,
+			"score":         score,
+			"reason":        reason,
+		})
+	}
+	return out, rows.Err()
 }
 
 func (s *Server) adminProxyHandler(prefix, target string) http.Handler {
@@ -428,13 +556,13 @@ func (s *Server) meProfileGet(w http.ResponseWriter, r *http.Request) {
 	creatorBadge, _ := s.userCreatorBadge(r.Context(), claims.Subject)
 	hasSubsonicPassword, _ := s.userHasSubsonicPassword(r.Context(), claims.Subject)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"subject":       claims.Subject,
-		"username":      claims.Username,
-		"email":         email,
-		"display_name":  displayName,
-		"bio":           bio,
-		"avatar_url":    avatarURL,
-		"creator_badge": creatorBadge,
+		"subject":               claims.Subject,
+		"username":              claims.Username,
+		"email":                 email,
+		"display_name":          displayName,
+		"bio":                   bio,
+		"avatar_url":            avatarURL,
+		"creator_badge":         creatorBadge,
 		"has_subsonic_password": hasSubsonicPassword,
 	})
 }
@@ -1462,7 +1590,7 @@ func (s *Server) listAlbums(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if isAdmin {
 		rows, err = s.db.Query(r.Context(), `
-			SELECT a.id, a.title, COALESCE(ar.name,''), a.visibility, a.created_at::text, COALESCE(a.cover_path,''), a.owner_sub, COALESCE(NULLIF(up.display_name,''), a.owner_sub)
+			SELECT a.id, a.title, COALESCE(ar.name,''), a.visibility, a.created_at::text, COALESCE(a.cover_path,''), a.owner_sub, COALESCE(NULLIF(up.display_name,''), a.owner_sub), COALESCE(a.genre,'')
 			FROM albums a
 			LEFT JOIN artists ar ON ar.id = a.artist_id
 			LEFT JOIN user_profiles up ON up.user_sub=a.owner_sub
@@ -1471,7 +1599,7 @@ func (s *Server) listAlbums(w http.ResponseWriter, r *http.Request) {
 		`)
 	} else if hasClaims {
 		rows, err = s.db.Query(r.Context(), `
-			SELECT a.id, a.title, COALESCE(ar.name,''), a.visibility, a.created_at::text, COALESCE(a.cover_path,''), a.owner_sub, COALESCE(NULLIF(up.display_name,''), a.owner_sub)
+			SELECT a.id, a.title, COALESCE(ar.name,''), a.visibility, a.created_at::text, COALESCE(a.cover_path,''), a.owner_sub, COALESCE(NULLIF(up.display_name,''), a.owner_sub), COALESCE(a.genre,'')
 			FROM albums a
 			LEFT JOIN artists ar ON ar.id = a.artist_id
 			LEFT JOIN user_profiles up ON up.user_sub=a.owner_sub
@@ -1481,7 +1609,7 @@ func (s *Server) listAlbums(w http.ResponseWriter, r *http.Request) {
 		`, claims.Subject)
 	} else {
 		rows, err = s.db.Query(r.Context(), `
-			SELECT a.id, a.title, COALESCE(ar.name,''), a.visibility, a.created_at::text, COALESCE(a.cover_path,''), a.owner_sub, COALESCE(NULLIF(up.display_name,''), a.owner_sub)
+			SELECT a.id, a.title, COALESCE(ar.name,''), a.visibility, a.created_at::text, COALESCE(a.cover_path,''), a.owner_sub, COALESCE(NULLIF(up.display_name,''), a.owner_sub), COALESCE(a.genre,'')
 			FROM albums a
 			LEFT JOIN artists ar ON ar.id = a.artist_id
 			LEFT JOIN user_profiles up ON up.user_sub=a.owner_sub
@@ -1499,8 +1627,8 @@ func (s *Server) listAlbums(w http.ResponseWriter, r *http.Request) {
 	albums := make([]map[string]any, 0, 64)
 	for rows.Next() {
 		var id int64
-		var title, artist, visibility, created, coverPath, ownerSub, uploaderName string
-		if err := rows.Scan(&id, &title, &artist, &visibility, &created, &coverPath, &ownerSub, &uploaderName); err != nil {
+		var title, artist, visibility, created, coverPath, ownerSub, uploaderName, genre string
+		if err := rows.Scan(&id, &title, &artist, &visibility, &created, &coverPath, &ownerSub, &uploaderName, &genre); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -1508,6 +1636,7 @@ func (s *Server) listAlbums(w http.ResponseWriter, r *http.Request) {
 			"id":            id,
 			"title":         title,
 			"artist":        artist,
+			"genre":         genre,
 			"visibility":    visibility,
 			"created_at":    created,
 			"cover_path":    coverPath,
@@ -1516,6 +1645,422 @@ func (s *Server) listAlbums(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"albums": albums})
+}
+
+func (s *Server) recordListeningEvent(w http.ResponseWriter, r *http.Request) {
+	claims, hasClaims := auth.FromContext(r.Context())
+	viewerSub := ""
+	isAdmin := false
+	if hasClaims {
+		viewerSub = claims.Subject
+		isAdmin = auth.HasRole(claims, "admin")
+	}
+	var req struct {
+		TrackID         string  `json:"track_id"`
+		EventType       string  `json:"event_type"`
+		SourceContext   string  `json:"source_context"`
+		SessionID       string  `json:"session_id"`
+		PlaybackSeconds float64 `json:"playback_seconds"`
+		DurationSeconds float64 `json:"duration_seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	req.TrackID = strings.TrimSpace(req.TrackID)
+	req.EventType = strings.TrimSpace(req.EventType)
+	if req.TrackID == "" || !listeningEventAllowed(req.EventType) {
+		http.Error(w, "invalid event", http.StatusBadRequest)
+		return
+	}
+	allowed, err := s.canAccessTrack(r.Context(), viewerSub, isAdmin, req.TrackID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if req.PlaybackSeconds < 0 {
+		req.PlaybackSeconds = 0
+	}
+	if req.DurationSeconds < 0 {
+		req.DurationSeconds = 0
+	}
+	if err := s.recordBehaviorEvent(r.Context(), viewerSub, req.TrackID, req.EventType, req.SourceContext, req.PlaybackSeconds, req.DurationSeconds, req.SessionID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+func (s *Server) discoveryOverview(w http.ResponseWriter, r *http.Request) {
+	claims, hasClaims := auth.FromContext(r.Context())
+	viewerSub := ""
+	if hasClaims {
+		viewerSub = claims.Subject
+	}
+
+	topTracksRows, err := s.db.Query(r.Context(), `
+		SELECT
+			t.id::text,
+			t.title,
+			COALESCE(ar.name,'') AS artist,
+			COALESCE(al.title,'') AS album,
+			COALESCE(t.genre,'') AS genre,
+			COALESCE(rr.avg_rating,0) AS rating,
+			t.duration_seconds,
+			t.visibility,
+			t.owner_sub,
+			COALESCE(NULLIF(up.display_name,''), t.owner_sub) AS uploader_name,
+			(COALESCE(pe.plays,0) + COALESCE(le.event_score,0))::float8 AS score,
+			'Top songs right now' AS reason
+		FROM tracks t
+		LEFT JOIN artists ar ON ar.id=t.artist_id
+		LEFT JOIN albums al ON al.id=t.album_id
+		LEFT JOIN user_profiles up ON up.user_sub=t.owner_sub
+		LEFT JOIN LATERAL (
+			SELECT AVG(r.rating)::float8 AS avg_rating
+			FROM ratings r
+			WHERE r.track_id=t.id
+		) rr ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS plays
+			FROM play_events p
+			WHERE p.track_id=t.id
+		) pe ON true
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(SUM(
+				CASE event_type
+					WHEN 'play_30s' THEN 2
+					WHEN 'play_50_percent' THEN 3
+					WHEN 'play_complete' THEN 5
+					WHEN 'playlist_add' THEN 4
+					WHEN 'rating' THEN 3
+					WHEN 'skip_early' THEN -2
+					ELSE 0
+				END
+			),0)::bigint AS event_score
+			FROM listening_events le
+			WHERE le.track_id=t.id
+			  AND le.created_at >= now() - interval '30 day'
+		) le ON true
+		WHERE t.visibility='public'
+		ORDER BY score DESC, pe.plays DESC, lower(t.title)
+		LIMIT 12
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	topTracks, err := s.scanTrackCards(topTracksRows)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	trendingRows, err := s.db.Query(r.Context(), `
+		SELECT
+			t.id::text,
+			t.title,
+			COALESCE(ar.name,'') AS artist,
+			COALESCE(al.title,'') AS album,
+			COALESCE(t.genre,'') AS genre,
+			COALESCE(rr.avg_rating,0) AS rating,
+			t.duration_seconds,
+			t.visibility,
+			t.owner_sub,
+			COALESCE(NULLIF(up.display_name,''), t.owner_sub) AS uploader_name,
+			(
+				COALESCE(ps.plays_7d,0) * 1.5 +
+				COALESCE(ls.complete_7d,0) * 4 +
+				COALESCE(ls.mid_7d,0) * 2 +
+				COALESCE(ls.playlist_7d,0) * 4 +
+				COALESCE(ls.rating_7d,0) * 3 -
+				COALESCE(ls.skip_7d,0) * 2
+			)::float8 AS score,
+			'Trending this week' AS reason
+		FROM tracks t
+		LEFT JOIN artists ar ON ar.id=t.artist_id
+		LEFT JOIN albums al ON al.id=t.album_id
+		LEFT JOIN user_profiles up ON up.user_sub=t.owner_sub
+		LEFT JOIN LATERAL (
+			SELECT AVG(r.rating)::float8 AS avg_rating
+			FROM ratings r
+			WHERE r.track_id=t.id
+		) rr ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS plays_7d
+			FROM play_events p
+			WHERE p.track_id=t.id
+			  AND p.played_at >= now() - interval '7 day'
+		) ps ON true
+		LEFT JOIN LATERAL (
+			SELECT
+				COUNT(*) FILTER (WHERE event_type='play_complete')::bigint AS complete_7d,
+				COUNT(*) FILTER (WHERE event_type IN ('play_30s','play_50_percent'))::bigint AS mid_7d,
+				COUNT(*) FILTER (WHERE event_type='playlist_add')::bigint AS playlist_7d,
+				COUNT(*) FILTER (WHERE event_type='rating')::bigint AS rating_7d,
+				COUNT(*) FILTER (WHERE event_type='skip_early')::bigint AS skip_7d
+			FROM listening_events le
+			WHERE le.track_id=t.id
+			  AND le.created_at >= now() - interval '7 day'
+		) ls ON true
+		WHERE t.visibility='public'
+		ORDER BY score DESC, lower(t.title)
+		LIMIT 12
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	trendingTracks, err := s.scanTrackCards(trendingRows)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	topAlbumsRows, err := s.db.Query(r.Context(), `
+		SELECT
+			a.id,
+			a.title,
+			COALESCE(ar.name,'') AS artist,
+			COALESCE(a.genre,'') AS genre,
+			a.visibility,
+			a.owner_sub,
+			COALESCE(NULLIF(up.display_name,''), a.owner_sub) AS uploader_name,
+			COALESCE(tc.track_count,0)::bigint AS track_count,
+			(COALESCE(ap.plays,0) + COALESCE(al.score,0))::float8 AS score,
+			'Top albums' AS reason
+		FROM albums a
+		LEFT JOIN artists ar ON ar.id=a.artist_id
+		LEFT JOIN user_profiles up ON up.user_sub=a.owner_sub
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS track_count
+			FROM tracks t
+			WHERE t.album_id=a.id
+		) tc ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS plays
+			FROM play_events p
+			WHERE p.album_id=a.id
+		) ap ON true
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(SUM(
+				CASE event_type
+					WHEN 'play_complete' THEN 5
+					WHEN 'play_50_percent' THEN 3
+					WHEN 'play_30s' THEN 2
+					WHEN 'playlist_add' THEN 4
+					WHEN 'rating' THEN 3
+					WHEN 'skip_early' THEN -2
+					ELSE 0
+				END
+			),0)::bigint AS score
+			FROM listening_events le
+			WHERE le.album_id=a.id
+			  AND le.created_at >= now() - interval '30 day'
+		) al ON true
+		WHERE a.visibility='public'
+		ORDER BY score DESC, ap.plays DESC, lower(a.title)
+		LIMIT 8
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	topAlbums, err := s.scanAlbumCards(topAlbumsRows)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	personal := map[string]any{
+		"favorite_genres":    []string{},
+		"recommended_tracks": []map[string]any{},
+		"summary":            "Login to unlock personal discovery.",
+		"enabled":            false,
+	}
+	if viewerSub != "" {
+		type genrePref struct {
+			Genre string
+			Score float64
+		}
+		prefs := make([]genrePref, 0, 3)
+		prefRows, err := s.db.Query(r.Context(), `
+			WITH genre_pref AS (
+				SELECT genre, SUM(weight)::float8 AS score
+				FROM (
+					SELECT COALESCE(t.genre,'') AS genre,
+						CASE le.event_type
+							WHEN 'play_complete' THEN 5
+							WHEN 'play_50_percent' THEN 3
+							WHEN 'play_30s' THEN 2
+							WHEN 'playlist_add' THEN 5
+							WHEN 'rating' THEN 4
+							WHEN 'skip_early' THEN -3
+							ELSE 1
+						END::float8 AS weight
+					FROM listening_events le
+					JOIN tracks t ON t.id=le.track_id
+					WHERE le.user_sub=$1
+					  AND le.created_at >= now() - interval '120 day'
+					  AND COALESCE(t.genre,'') <> ''
+					UNION ALL
+					SELECT COALESCE(t.genre,'') AS genre, (r.rating * 2)::float8 AS weight
+					FROM ratings r
+					JOIN tracks t ON t.id=r.track_id
+					WHERE r.author_sub=$1
+					  AND COALESCE(t.genre,'') <> ''
+				) src
+				GROUP BY genre
+			)
+			SELECT genre, score
+			FROM genre_pref
+			ORDER BY score DESC, genre ASC
+			LIMIT 3
+		`, viewerSub)
+		if err == nil {
+			defer prefRows.Close()
+			for prefRows.Next() {
+				var p genrePref
+				if prefRows.Scan(&p.Genre, &p.Score) == nil {
+					prefs = append(prefs, p)
+				}
+			}
+		}
+		favoriteGenres := make([]string, 0, len(prefs))
+		for _, p := range prefs {
+			if strings.TrimSpace(p.Genre) != "" {
+				favoriteGenres = append(favoriteGenres, p.Genre)
+			}
+		}
+		var recommended []map[string]any
+		if len(favoriteGenres) > 0 {
+			recRows, err := s.db.Query(r.Context(), `
+				WITH genre_pref AS (
+					SELECT genre, score
+					FROM (
+						SELECT genre, SUM(weight)::float8 AS score
+						FROM (
+							SELECT COALESCE(t.genre,'') AS genre,
+								CASE le.event_type
+									WHEN 'play_complete' THEN 5
+									WHEN 'play_50_percent' THEN 3
+									WHEN 'play_30s' THEN 2
+									WHEN 'playlist_add' THEN 5
+									WHEN 'rating' THEN 4
+									WHEN 'skip_early' THEN -3
+									ELSE 1
+								END::float8 AS weight
+							FROM listening_events le
+							JOIN tracks t ON t.id=le.track_id
+							WHERE le.user_sub=$1
+							  AND le.created_at >= now() - interval '120 day'
+							  AND COALESCE(t.genre,'') <> ''
+							UNION ALL
+							SELECT COALESCE(t.genre,'') AS genre, (r.rating * 2)::float8 AS weight
+							FROM ratings r
+							JOIN tracks t ON t.id=r.track_id
+							WHERE r.author_sub=$1
+							  AND COALESCE(t.genre,'') <> ''
+						) pref_src
+						GROUP BY genre
+					) grouped
+					ORDER BY score DESC, genre ASC
+					LIMIT 3
+				),
+				heard AS (
+					SELECT DISTINCT track_id
+					FROM listening_events
+					WHERE user_sub=$1
+					UNION
+					SELECT DISTINCT track_id
+					FROM play_events
+					WHERE user_sub=$1
+				),
+				followed AS (
+					SELECT followed_sub
+					FROM follows
+					WHERE follower_sub=$1
+				)
+				SELECT
+					t.id::text,
+					t.title,
+					COALESCE(ar.name,'') AS artist,
+					COALESCE(al.title,'') AS album,
+					COALESCE(t.genre,'') AS genre,
+					COALESCE(rr.avg_rating,0) AS rating,
+					t.duration_seconds,
+					t.visibility,
+					t.owner_sub,
+					COALESCE(NULLIF(up.display_name,''), t.owner_sub) AS uploader_name,
+					(
+						gp.score * 4 +
+						COALESCE(gs.score, 0) +
+						CASE WHEN EXISTS(SELECT 1 FROM followed f WHERE f.followed_sub=t.owner_sub) THEN 3 ELSE 0 END +
+						CASE WHEN t.created_at >= now() - interval '30 day' THEN 2 ELSE 0 END
+					)::float8 AS score,
+					('Matches your interest in ' || gp.genre) AS reason
+				FROM tracks t
+				JOIN genre_pref gp ON gp.genre = COALESCE(t.genre,'')
+				LEFT JOIN artists ar ON ar.id=t.artist_id
+				LEFT JOIN albums al ON al.id=t.album_id
+				LEFT JOIN user_profiles up ON up.user_sub=t.owner_sub
+				LEFT JOIN heard h ON h.track_id=t.id
+				LEFT JOIN LATERAL (
+					SELECT AVG(r.rating)::float8 AS avg_rating
+					FROM ratings r
+					WHERE r.track_id=t.id
+				) rr ON true
+				LEFT JOIN LATERAL (
+					SELECT
+						(
+							COUNT(*) FILTER (WHERE event_type='play_complete') * 5 +
+							COUNT(*) FILTER (WHERE event_type='play_50_percent') * 3 +
+							COUNT(*) FILTER (WHERE event_type='play_30s') * 2 +
+							COUNT(*) FILTER (WHERE event_type='playlist_add') * 4 +
+							COUNT(*) FILTER (WHERE event_type='rating') * 3 -
+							COUNT(*) FILTER (WHERE event_type='skip_early') * 2
+						)::float8 AS score
+					FROM listening_events le
+					WHERE le.track_id=t.id
+					  AND le.created_at >= now() - interval '30 day'
+				) gs ON true
+				WHERE t.visibility='public'
+				  AND h.track_id IS NULL
+				ORDER BY score DESC, lower(t.title)
+				LIMIT 12
+			`, viewerSub)
+			if err == nil {
+				recommended, err = s.scanTrackCards(recRows)
+				if err != nil {
+					recommended = []map[string]any{}
+				}
+			}
+		}
+		summary := "Still learning from your listening."
+		if len(favoriteGenres) > 0 {
+			summary = "Built from your strongest genres and listening patterns."
+		}
+		personal = map[string]any{
+			"favorite_genres":    favoriteGenres,
+			"recommended_tracks": recommended,
+			"summary":            summary,
+			"enabled":            true,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"global": map[string]any{
+			"top_songs":       topTracks,
+			"trending_tracks": trendingTracks,
+			"top_albums":      topAlbums,
+		},
+		"personal":    personal,
+		"server_time": time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func (s *Server) listPlaylists(w http.ResponseWriter, r *http.Request) {
@@ -1889,6 +2434,7 @@ func (s *Server) addPlaylistTrack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.writeAudit(r.Context(), claims.Subject, "playlist.add_track", "playlist", strconv.FormatInt(playlistID, 10), map[string]any{"track_id": trackID})
+	_ = s.recordBehaviorEvent(r.Context(), claims.Subject, trackID, "playlist_add", "playlist", 0, 0, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "added"})
 }
 
@@ -2657,6 +3203,7 @@ func (s *Server) rateTrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = s.recordBehaviorEvent(r.Context(), claims.Subject, trackID, "rating", "track_rating", float64(req.Rating), 5, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rated"})
 }
 
@@ -2786,6 +3333,253 @@ func (s *Server) userUploads(w http.ResponseWriter, r *http.Request) {
 		tracks = append(tracks, map[string]any{"id": id, "title": title, "artist": artist, "album": album, "rating": rating, "visibility": vis, "created_at": created})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"albums": albums, "tracks": tracks})
+}
+
+func (s *Server) creatorStats(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	creatorBadge, _ := s.userCreatorBadge(r.Context(), claims.Subject)
+	if !creatorBadge && !auth.HasRole(claims, "admin") {
+		http.Error(w, "creator badge required", http.StatusForbidden)
+		return
+	}
+	windowName, windowSQL := parseStatsWindow(r.URL.Query().Get("window"))
+	targetSub := claims.Subject
+	if auth.HasRole(claims, "admin") {
+		if qs := strings.TrimSpace(r.URL.Query().Get("user_sub")); qs != "" {
+			targetSub = qs
+		}
+	}
+	filterPlay := ``
+	filterListen := ``
+	filterRatings := ``
+	if windowSQL != "" {
+		filterPlay = ` AND p.played_at >= ` + windowSQL
+		filterListen = ` AND le.created_at >= ` + windowSQL
+		filterRatings = ` AND r.created_at >= ` + windowSQL
+	}
+
+	overview := map[string]any{
+		"tracks_total":      int64(0),
+		"albums_total":      int64(0),
+		"public_tracks":     int64(0),
+		"public_albums":     int64(0),
+		"plays_total":       int64(0),
+		"unique_listeners":  int64(0),
+		"guest_plays":       int64(0),
+		"qualified_listens": int64(0),
+		"completed_listens": int64(0),
+		"early_skips":       int64(0),
+		"playlist_adds":     int64(0),
+		"ratings_count":     int64(0),
+		"avg_rating":        float64(0),
+	}
+	var tracksTotal, albumsTotal, publicTracks, publicAlbums int64
+	_ = s.db.QueryRow(r.Context(), `
+		SELECT
+			(SELECT COUNT(*)::bigint FROM tracks WHERE owner_sub=$1),
+			(SELECT COUNT(*)::bigint FROM albums WHERE owner_sub=$1),
+			(SELECT COUNT(*)::bigint FROM tracks WHERE owner_sub=$1 AND visibility='public'),
+			(SELECT COUNT(*)::bigint FROM albums WHERE owner_sub=$1 AND visibility='public')
+	`, targetSub).Scan(&tracksTotal, &albumsTotal, &publicTracks, &publicAlbums)
+	overview["tracks_total"] = tracksTotal
+	overview["albums_total"] = albumsTotal
+	overview["public_tracks"] = publicTracks
+	overview["public_albums"] = publicAlbums
+
+	playsQuery := `
+		SELECT
+			COUNT(*)::bigint,
+			COUNT(DISTINCT NULLIF(p.user_sub,''))::bigint,
+			COUNT(*) FILTER (WHERE COALESCE(p.user_sub,'')='')::bigint
+		FROM play_events p
+		JOIN tracks t ON t.id=p.track_id
+		WHERE t.owner_sub=$1` + filterPlay
+	var playsTotal, uniqueListeners, guestPlays int64
+	_ = s.db.QueryRow(r.Context(), playsQuery, targetSub).Scan(&playsTotal, &uniqueListeners, &guestPlays)
+	overview["plays_total"] = playsTotal
+	overview["unique_listeners"] = uniqueListeners
+	overview["guest_plays"] = guestPlays
+
+	listensQuery := `
+		SELECT
+			COUNT(*) FILTER (WHERE le.event_type IN ('play_30s','play_50_percent','play_complete'))::bigint,
+			COUNT(*) FILTER (WHERE le.event_type='play_complete')::bigint,
+			COUNT(*) FILTER (WHERE le.event_type='skip_early')::bigint,
+			COUNT(*) FILTER (WHERE le.event_type='playlist_add')::bigint
+		FROM listening_events le
+		JOIN tracks t ON t.id=le.track_id
+		WHERE t.owner_sub=$1` + filterListen
+	var qualifiedListens, completedListens, earlySkips, playlistAdds int64
+	_ = s.db.QueryRow(r.Context(), listensQuery, targetSub).Scan(&qualifiedListens, &completedListens, &earlySkips, &playlistAdds)
+	overview["qualified_listens"] = qualifiedListens
+	overview["completed_listens"] = completedListens
+	overview["early_skips"] = earlySkips
+	overview["playlist_adds"] = playlistAdds
+
+	ratingQuery := `
+		SELECT COUNT(*)::bigint, COALESCE(AVG(r.rating),0)::float8
+		FROM ratings r
+		JOIN tracks t ON t.id=r.track_id
+		WHERE t.owner_sub=$1` + filterRatings
+	var ratingsCount int64
+	var avgRating float64
+	_ = s.db.QueryRow(r.Context(), ratingQuery, targetSub).Scan(&ratingsCount, &avgRating)
+	overview["ratings_count"] = ratingsCount
+	overview["avg_rating"] = avgRating
+
+	topTracksRows, err := s.db.Query(r.Context(), `
+		SELECT
+			t.id::text,
+			t.title,
+			COALESCE(ar.name,'') AS artist,
+			COALESCE(al.title,'') AS album,
+			COALESCE(t.genre,'') AS genre,
+			COALESCE(rr.avg_rating,0) AS rating,
+			t.duration_seconds,
+			t.visibility,
+			t.owner_sub,
+			COALESCE(NULLIF(up.display_name,''), t.owner_sub) AS uploader_name,
+			(
+				COALESCE(ps.plays,0) +
+				COALESCE(ls.complete_count,0) * 4 +
+				COALESCE(ls.mid_count,0) * 2 +
+				COALESCE(ls.playlist_count,0) * 4 +
+				COALESCE(ls.rating_count,0) * 3 -
+				COALESCE(ls.skip_count,0) * 2
+			)::float8 AS score,
+			'Creator top track' AS reason
+		FROM tracks t
+		LEFT JOIN artists ar ON ar.id=t.artist_id
+		LEFT JOIN albums al ON al.id=t.album_id
+		LEFT JOIN user_profiles up ON up.user_sub=t.owner_sub
+		LEFT JOIN LATERAL (
+			SELECT AVG(r.rating)::float8 AS avg_rating
+			FROM ratings r
+			WHERE r.track_id=t.id
+		) rr ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS plays
+			FROM play_events p
+			WHERE p.track_id=t.id`+strings.ReplaceAll(filterPlay, "p.", "p.")+`
+		) ps ON true
+		LEFT JOIN LATERAL (
+			SELECT
+				COUNT(*) FILTER (WHERE event_type='play_complete')::bigint AS complete_count,
+				COUNT(*) FILTER (WHERE event_type IN ('play_30s','play_50_percent'))::bigint AS mid_count,
+				COUNT(*) FILTER (WHERE event_type='playlist_add')::bigint AS playlist_count,
+				COUNT(*) FILTER (WHERE event_type='rating')::bigint AS rating_count,
+				COUNT(*) FILTER (WHERE event_type='skip_early')::bigint AS skip_count
+			FROM listening_events le
+			WHERE le.track_id=t.id`+strings.ReplaceAll(filterListen, "le.", "le.")+`
+		) ls ON true
+		WHERE t.owner_sub=$1
+		ORDER BY score DESC, lower(t.title)
+		LIMIT 12
+	`, targetSub)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	topTracks, err := s.scanTrackCards(topTracksRows)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	topAlbumsRows, err := s.db.Query(r.Context(), `
+		SELECT
+			a.id,
+			a.title,
+			COALESCE(ar.name,'') AS artist,
+			COALESCE(a.genre,'') AS genre,
+			a.visibility,
+			a.owner_sub,
+			COALESCE(NULLIF(up.display_name,''), a.owner_sub) AS uploader_name,
+			COALESCE(tc.track_count,0)::bigint AS track_count,
+			(
+				COALESCE(ps.plays,0) +
+				COALESCE(ls.complete_count,0) * 4 +
+				COALESCE(ls.mid_count,0) * 2 +
+				COALESCE(ls.playlist_count,0) * 4 +
+				COALESCE(ls.rating_count,0) * 3 -
+				COALESCE(ls.skip_count,0) * 2
+			)::float8 AS score,
+			'Creator top album' AS reason
+		FROM albums a
+		LEFT JOIN artists ar ON ar.id=a.artist_id
+		LEFT JOIN user_profiles up ON up.user_sub=a.owner_sub
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS track_count
+			FROM tracks t
+			WHERE t.album_id=a.id
+		) tc ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS plays
+			FROM play_events p
+			WHERE p.album_id=a.id`+strings.ReplaceAll(filterPlay, "p.", "p.")+`
+		) ps ON true
+		LEFT JOIN LATERAL (
+			SELECT
+				COUNT(*) FILTER (WHERE event_type='play_complete')::bigint AS complete_count,
+				COUNT(*) FILTER (WHERE event_type IN ('play_30s','play_50_percent'))::bigint AS mid_count,
+				COUNT(*) FILTER (WHERE event_type='playlist_add')::bigint AS playlist_count,
+				COUNT(*) FILTER (WHERE event_type='rating')::bigint AS rating_count,
+				COUNT(*) FILTER (WHERE event_type='skip_early')::bigint AS skip_count
+			FROM listening_events le
+			WHERE le.album_id=a.id`+strings.ReplaceAll(filterListen, "le.", "le.")+`
+		) ls ON true
+		WHERE a.owner_sub=$1
+		ORDER BY score DESC, lower(a.title)
+		LIMIT 8
+	`, targetSub)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	topAlbums, err := s.scanAlbumCards(topAlbumsRows)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sourceRows, err := s.db.Query(r.Context(), `
+		SELECT COALESCE(NULLIF(le.source_context,''), 'unknown') AS source_context, COUNT(*)::bigint AS events
+		FROM listening_events le
+		JOIN tracks t ON t.id=le.track_id
+		WHERE t.owner_sub=$1`+filterListen+`
+		GROUP BY source_context
+		ORDER BY events DESC, source_context ASC
+		LIMIT 12
+	`, targetSub)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer sourceRows.Close()
+	sources := make([]map[string]any, 0, 12)
+	for sourceRows.Next() {
+		var source string
+		var events int64
+		if err := sourceRows.Scan(&source, &events); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sources = append(sources, map[string]any{"source_context": source, "events": events})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"window":      windowName,
+		"user_sub":    targetSub,
+		"overview":    overview,
+		"top_tracks":  topTracks,
+		"top_albums":  topAlbums,
+		"sources":     sources,
+		"server_time": time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func (s *Server) createUserProfileComment(w http.ResponseWriter, r *http.Request) {
@@ -3715,7 +4509,7 @@ func (s *Server) adminGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"registration_enabled": enabled,
+		"registration_enabled":  enabled,
 		"debug_logging_enabled": debugEnabled,
 	})
 }
