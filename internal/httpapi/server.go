@@ -3356,11 +3356,16 @@ func (s *Server) creatorStats(w http.ResponseWriter, r *http.Request) {
 	filterPlay := ``
 	filterListen := ``
 	filterRatings := ``
+	recentWindowSQL := "now() - interval '7 day'"
+	if windowName == "24h" && windowSQL != "" {
+		recentWindowSQL = windowSQL
+	}
 	if windowSQL != "" {
 		filterPlay = ` AND p.played_at >= ` + windowSQL
 		filterListen = ` AND le.created_at >= ` + windowSQL
 		filterRatings = ` AND r.created_at >= ` + windowSQL
 	}
+	filterRecentPlay := ` AND p.played_at >= ` + recentWindowSQL
 
 	overview := map[string]any{
 		"tracks_total":      int64(0),
@@ -3444,14 +3449,12 @@ func (s *Server) creatorStats(w http.ResponseWriter, r *http.Request) {
 			t.owner_sub,
 			COALESCE(NULLIF(up.display_name,''), t.owner_sub) AS uploader_name,
 			(
-				COALESCE(ps.plays,0) +
-				COALESCE(ls.complete_count,0) * 4 +
-				COALESCE(ls.mid_count,0) * 2 +
-				COALESCE(ls.playlist_count,0) * 4 +
-				COALESCE(ls.rating_count,0) * 3 -
-				COALESCE(ls.skip_count,0) * 2
+				COALESCE(ps.plays,0) * 0.6 +
+				COALESCE(rp.recent_plays,0) * 1.2 +
+				COALESCE(rr.avg_rating,0) * 2 +
+				COALESCE(ul.unique_listeners,0) * 1.5
 			)::float8 AS score,
-			'Creator top track' AS reason
+			'Weighted creator score' AS reason
 		FROM tracks t
 		LEFT JOIN artists ar ON ar.id=t.artist_id
 		LEFT JOIN albums al ON al.id=t.album_id
@@ -3467,15 +3470,15 @@ func (s *Server) creatorStats(w http.ResponseWriter, r *http.Request) {
 			WHERE p.track_id=t.id`+strings.ReplaceAll(filterPlay, "p.", "p.")+`
 		) ps ON true
 		LEFT JOIN LATERAL (
-			SELECT
-				COUNT(*) FILTER (WHERE event_type='play_complete')::bigint AS complete_count,
-				COUNT(*) FILTER (WHERE event_type IN ('play_30s','play_50_percent'))::bigint AS mid_count,
-				COUNT(*) FILTER (WHERE event_type='playlist_add')::bigint AS playlist_count,
-				COUNT(*) FILTER (WHERE event_type='rating')::bigint AS rating_count,
-				COUNT(*) FILTER (WHERE event_type='skip_early')::bigint AS skip_count
-			FROM listening_events le
-			WHERE le.track_id=t.id`+strings.ReplaceAll(filterListen, "le.", "le.")+`
-		) ls ON true
+			SELECT COUNT(*)::bigint AS recent_plays
+			FROM play_events p
+			WHERE p.track_id=t.id`+strings.ReplaceAll(filterRecentPlay, "p.", "p.")+`
+		) rp ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(DISTINCT NULLIF(p.user_sub,''))::bigint AS unique_listeners
+			FROM play_events p
+			WHERE p.track_id=t.id`+strings.ReplaceAll(filterPlay, "p.", "p.")+`
+		) ul ON true
 		WHERE t.owner_sub=$1
 		ORDER BY score DESC, lower(t.title)
 		LIMIT 12
@@ -3501,17 +3504,21 @@ func (s *Server) creatorStats(w http.ResponseWriter, r *http.Request) {
 			COALESCE(NULLIF(up.display_name,''), a.owner_sub) AS uploader_name,
 			COALESCE(tc.track_count,0)::bigint AS track_count,
 			(
-				COALESCE(ps.plays,0) +
-				COALESCE(ls.complete_count,0) * 4 +
-				COALESCE(ls.mid_count,0) * 2 +
-				COALESCE(ls.playlist_count,0) * 4 +
-				COALESCE(ls.rating_count,0) * 3 -
-				COALESCE(ls.skip_count,0) * 2
+				COALESCE(ps.plays,0) * 0.6 +
+				COALESCE(rp.recent_plays,0) * 1.2 +
+				COALESCE(rr.avg_rating,0) * 2 +
+				COALESCE(ul.unique_listeners,0) * 1.5
 			)::float8 AS score,
-			'Creator top album' AS reason
+			'Weighted creator score' AS reason
 		FROM albums a
 		LEFT JOIN artists ar ON ar.id=a.artist_id
 		LEFT JOIN user_profiles up ON up.user_sub=a.owner_sub
+		LEFT JOIN LATERAL (
+			SELECT AVG(r.rating)::float8 AS avg_rating
+			FROM ratings r
+			JOIN tracks t ON t.id=r.track_id
+			WHERE t.album_id=a.id`+strings.ReplaceAll(filterRatings, "r.", "r.")+`
+		) rr ON true
 		LEFT JOIN LATERAL (
 			SELECT COUNT(*)::bigint AS track_count
 			FROM tracks t
@@ -3523,15 +3530,15 @@ func (s *Server) creatorStats(w http.ResponseWriter, r *http.Request) {
 			WHERE p.album_id=a.id`+strings.ReplaceAll(filterPlay, "p.", "p.")+`
 		) ps ON true
 		LEFT JOIN LATERAL (
-			SELECT
-				COUNT(*) FILTER (WHERE event_type='play_complete')::bigint AS complete_count,
-				COUNT(*) FILTER (WHERE event_type IN ('play_30s','play_50_percent'))::bigint AS mid_count,
-				COUNT(*) FILTER (WHERE event_type='playlist_add')::bigint AS playlist_count,
-				COUNT(*) FILTER (WHERE event_type='rating')::bigint AS rating_count,
-				COUNT(*) FILTER (WHERE event_type='skip_early')::bigint AS skip_count
-			FROM listening_events le
-			WHERE le.album_id=a.id`+strings.ReplaceAll(filterListen, "le.", "le.")+`
-		) ls ON true
+			SELECT COUNT(*)::bigint AS recent_plays
+			FROM play_events p
+			WHERE p.album_id=a.id`+strings.ReplaceAll(filterRecentPlay, "p.", "p.")+`
+		) rp ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(DISTINCT NULLIF(p.user_sub,''))::bigint AS unique_listeners
+			FROM play_events p
+			WHERE p.album_id=a.id`+strings.ReplaceAll(filterPlay, "p.", "p.")+`
+		) ul ON true
 		WHERE a.owner_sub=$1
 		ORDER BY score DESC, lower(a.title)
 		LIMIT 8
