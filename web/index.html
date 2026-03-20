@@ -127,7 +127,7 @@
       border: 1px solid var(--line);
       border-radius: var(--radius);
       display: grid;
-      grid-template-columns: 1fr auto auto;
+      grid-template-columns: minmax(220px, 1fr) auto auto auto;
       gap: 8px;
       padding: 8px;
       align-items: center;
@@ -892,6 +892,7 @@
       display: grid;
       grid-template-columns: repeat(3, minmax(220px, 1fr));
       gap: 10px;
+      align-items: start;
     }
     .service-card {
       border: 1px solid #3b4351;
@@ -900,6 +901,9 @@
       padding: 10px;
       display: grid;
       gap: 7px;
+      align-content: start;
+      align-self: stretch;
+      height: 100%;
     }
     .service-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
     .pill {
@@ -1498,6 +1502,9 @@
 
       <div class="toolbar" id="libraryToolbar">
         <input id="searchInput" placeholder="Search album/track" />
+        <select id="filterGenre">
+          <option value="all">All genres</option>
+        </select>
         <select id="filterVisibility">
           <option value="all">All visible</option>
           <option value="public">Public</option>
@@ -2297,6 +2304,8 @@
       playlistDockOpen: localStorage.getItem('hex_playlist_dock_open') === '1',
       albumCoverURLs: {},
       currentView: 'discovery',
+      albumGenreFilter: 'all',
+      trackGenreFilter: 'all',
       queue: [],
       queueIndex: -1,
       nowPlayingTrackId: '',
@@ -3626,18 +3635,55 @@
     function applyFilters() {
       const q = $('searchInput').value.trim().toLowerCase();
       const vis = $('filterVisibility').value;
+      const albumGenreFilter = state.albumGenreFilter || 'all';
+      const trackGenreFilter = state.trackGenreFilter || 'all';
 
       state.filteredTracks = state.tracks.filter((t) => {
         const okText = !q || `${t.title} ${t.artist} ${t.album} ${t.genre || ''} ${t.uploader_name || ''}`.toLowerCase().includes(q);
         const okVis = vis === 'all' || t.visibility === vis;
-        return okText && okVis;
+        const okGenre = trackGenreFilter === 'all' || (t.genre || '') === trackGenreFilter;
+        return okText && okVis && okGenre;
       });
 
       state.filteredAlbums = state.albums.filter((a) => {
         const okText = !q || `${a.title} ${a.artist} ${a.genre || ''} ${a.uploader_name || ''}`.toLowerCase().includes(q);
         const okVis = vis === 'all' || a.visibility === vis;
-        return okText && okVis;
+        const okGenre = albumGenreFilter === 'all' || (a.genre || '') === albumGenreFilter;
+        return okText && okVis && okGenre;
       });
+    }
+
+    function genreOptionsForView(view) {
+      if (view === 'albums') {
+        return Array.from(new Set((state.albums || []).map((a) => (a.genre || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+      }
+      if (view === 'tracks') {
+        const pool = state.currentView === 'tracks' && state.selectedAlbum && Number(state.selectedAlbum.id) === Number(state.tracksAlbumContextID)
+          ? (state.tracks || []).filter((t) => {
+              if (normText(t.album) !== normText(state.selectedAlbum.title)) return false;
+              if (!state.selectedAlbum.artist || !t.artist) return true;
+              return normText(t.artist) === normText(state.selectedAlbum.artist);
+            })
+          : (state.tracks || []);
+        return Array.from(new Set(pool.map((t) => (t.genre || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+      }
+      return [];
+    }
+
+    function syncGenreFilterControl(view = state.currentView) {
+      const control = $('filterGenre');
+      const activeView = view === 'albums' || view === 'tracks' ? view : state.currentView;
+      const show = activeView === 'albums' || activeView === 'tracks';
+      control.classList.toggle('hidden', !show);
+      if (!show) return;
+
+      const options = genreOptionsForView(activeView);
+      const currentValue = activeView === 'albums' ? (state.albumGenreFilter || 'all') : (state.trackGenreFilter || 'all');
+      const fallbackLabel = activeView === 'albums' ? 'All album genres' : 'All track genres';
+      control.innerHTML = `<option value="all">${fallbackLabel}</option>${options.map((genre) => `<option value="${escapeHtml(genre)}">${escapeHtml(genre)}</option>`).join('')}`;
+      control.value = options.includes(currentValue) ? currentValue : 'all';
+      if (activeView === 'albums') state.albumGenreFilter = control.value;
+      if (activeView === 'tracks') state.trackGenreFilter = control.value;
     }
 
     function sourceContextForPlayback(explicit = '') {
@@ -5508,6 +5554,7 @@
       const showLibraryToolbar = view === 'albums' || view === 'tracks';
       $('libraryToolbar').classList.toggle('hidden', !showLibraryToolbar);
       if (!showLibraryToolbar) return;
+      syncGenreFilterControl(view);
       if (view === 'albums') {
         $('searchInput').placeholder = 'Search albums';
         return;
@@ -5598,6 +5645,7 @@
         saveSelectedAlbumID(0);
       }
 
+      syncGenreFilterControl(state.currentView);
       applyFilters();
       await loadDiscovery();
       renderAlbums();
@@ -5703,6 +5751,7 @@
       $('viewUserProfile').classList.toggle('hidden', view !== 'user_profile');
       $('viewInviteRegister').classList.toggle('hidden', view !== 'invite_register');
       syncToolbarForView(view);
+      applyFilters();
       if (view === 'tracks') {
         renderTracks();
       } else {
@@ -6350,6 +6399,14 @@
 
       $('btnReload').onclick = loadData;
       $('searchInput').oninput = () => {
+        applyFilters();
+        renderAlbums();
+        renderTracks();
+        renderAlbumDetail();
+      };
+      $('filterGenre').onchange = () => {
+        if (state.currentView === 'albums') state.albumGenreFilter = $('filterGenre').value;
+        if (state.currentView === 'tracks') state.trackGenreFilter = $('filterGenre').value;
         applyFilters();
         renderAlbums();
         renderTracks();
