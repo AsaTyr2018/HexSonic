@@ -333,6 +333,38 @@
       font-size: 11px;
       min-width: 28px;
     }
+    .lyric-indicators {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 20px;
+    }
+    .lyric-indicator {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 6px;
+      border-radius: 999px;
+      border: 1px solid #5f6978;
+      background: #2b3037;
+      color: #dbe8f6;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      line-height: 1;
+    }
+    .lyric-indicator.sync {
+      border-color: #5d86c8;
+      background: #223754;
+      color: #b8d4ff;
+    }
+    .lyric-indicator.plain {
+      border-color: #5b7c68;
+      background: #24382c;
+      color: #c7efd5;
+    }
     .rating-pill {
       font-size: 11px;
       color: #b7c6d8;
@@ -1299,6 +1331,7 @@
                     <th style="width:170px">Artist</th>
                     <th style="width:170px">Album</th>
                     <th style="width:82px">Time</th>
+                    <th style="width:70px">Ly.</th>
                     <th style="width:78px">Rating</th>
                     <th style="width:86px">Vis.</th>
                     <th style="width:170px">Action</th>
@@ -3337,7 +3370,9 @@
         visibility: t.visibility || '-',
         duration: Math.round(t.duration_seconds || 0),
         owner_sub: t.owner_sub || '',
-        uploader_name: t.uploader_name || t.owner_sub || ''
+        uploader_name: t.uploader_name || t.owner_sub || '',
+        has_lyrics_txt: !!t.has_lyrics_txt,
+        has_lyrics_srt: !!t.has_lyrics_srt
       };
     }
 
@@ -3916,6 +3951,7 @@
           <td>${t.artist}</td>
           <td>${t.album}</td>
           <td>${fmt(t.duration)}</td>
+          <td>${renderLyricIndicators(t)}</td>
           <td>${state.me ? renderRateableStars(t.id, t.rating) : `<span class="stars">${renderStars(t.rating)}<span class="stars-meta">${renderTrackRating(t.rating)}</span></span>`}</td>
           <td>${shortVisibility(t.visibility)}</td>
           <td>
@@ -3963,8 +3999,22 @@
       });
 
       if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="8" class="muted">No tracks in current view.</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="muted">No tracks in current view.</td></tr>';
       }
+    }
+
+    function renderLyricIndicators(track) {
+      const hasPlain = !!track && !!track.has_lyrics_txt;
+      const hasSync = !!track && !!track.has_lyrics_srt;
+      if (!hasPlain && !hasSync) return '<span class="muted">-</span>';
+      const chips = [];
+      if (hasPlain) {
+        chips.push('<span class="lyric-indicator plain" title="Plain lyrics" aria-label="Plain lyrics">T</span>');
+      }
+      if (hasSync) {
+        chips.push('<span class="lyric-indicator sync" title="Synced lyrics" aria-label="Synced lyrics">S</span>');
+      }
+      return `<span class="lyric-indicators">${chips.join('')}</span>`;
     }
 
     function renderTrackRating(v) {
