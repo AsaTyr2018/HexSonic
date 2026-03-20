@@ -177,7 +177,32 @@
       overflow: hidden;
     }
     .album-name { margin-top: 6px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .album-meta { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .album-meta-stack {
+      margin-top: 4px;
+      display: grid;
+      gap: 3px;
+    }
+    .album-meta-line {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .album-meta-line strong {
+      color: #d8e6f6;
+      font-weight: 600;
+    }
+    .album-meta-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: rgba(130, 162, 207, 0.12);
+      border: 1px solid rgba(130, 162, 207, 0.18);
+    }
     .uploader-link {
       color: #7eb2ff;
       cursor: pointer;
@@ -191,6 +216,27 @@
       margin-top: 2px;
       font-size: 11px;
       color: #9eb1c8;
+    }
+    .track-main-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #edf3fb;
+    }
+    .track-meta-line {
+      margin-top: 3px;
+      font-size: 11px;
+      color: #97aac4;
+      line-height: 1.35;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .track-meta-line strong {
+      color: #d2def0;
+      font-weight: 600;
+    }
+    .track-meta-line .sep {
+      color: #617289;
     }
 
     .album-detail {
@@ -1330,6 +1376,7 @@
                     <th>Title</th>
                     <th style="width:170px">Artist</th>
                     <th style="width:170px">Album</th>
+                    <th style="width:120px">Genre</th>
                     <th style="width:82px">Time</th>
                     <th style="width:70px">Ly.</th>
                     <th style="width:78px">Rating</th>
@@ -1541,6 +1588,7 @@
                 <input class="full" name="title" id="uploadTitle" placeholder="Track title (optional, otherwise from tag/filename)" />
                 <input name="artist" placeholder="Artist" />
                 <input name="album" placeholder="Album" />
+                <input name="genre" placeholder="Genre" />
                 <select name="visibility">
                   <option value="private">private</option>
                   <option value="public">public</option>
@@ -3381,13 +3429,13 @@
       const vis = $('filterVisibility').value;
 
       state.filteredTracks = state.tracks.filter((t) => {
-        const okText = !q || `${t.title} ${t.artist} ${t.album}`.toLowerCase().includes(q);
+        const okText = !q || `${t.title} ${t.artist} ${t.album} ${t.genre || ''} ${t.uploader_name || ''}`.toLowerCase().includes(q);
         const okVis = vis === 'all' || t.visibility === vis;
         return okText && okVis;
       });
 
       state.filteredAlbums = state.albums.filter((a) => {
-        const okText = !q || `${a.title} ${a.artist}`.toLowerCase().includes(q);
+        const okText = !q || `${a.title} ${a.artist} ${a.genre || ''} ${a.uploader_name || ''}`.toLowerCase().includes(q);
         const okVis = vis === 'all' || a.visibility === vis;
         return okText && okVis;
       });
@@ -3408,8 +3456,17 @@
         card.innerHTML = `
           ${coverHTML}
           <div class="album-name" title="${album.title}">${album.title}</div>
-          <div class="album-meta"><span>${album.artist || '-'}</span><span>${albumAvg > 0 ? albumAvg.toFixed(1) : '-'}★</span><span>${album.visibility}</span></div>
-          <div class="uploader-inline">by <a class="uploader-link" data-user-sub="${album.owner_sub || ''}">${album.uploader_name || album.owner_sub || '-'}</a></div>
+          <div class="album-meta-stack">
+            <div class="album-meta-line">
+              <span><strong>Artist:</strong> ${album.artist || '-'}</span>
+              <span class="album-meta-tag"><strong>Genre</strong> ${album.genre || '-'}</span>
+            </div>
+            <div class="album-meta-line">
+              <span><strong>By</strong> <a class="uploader-link" data-user-sub="${album.owner_sub || ''}">${album.uploader_name || album.owner_sub || '-'}</a></span>
+              <span><strong>Rating</strong> ${albumAvg > 0 ? albumAvg.toFixed(1) : '-'}★</span>
+              <span><strong>Visibility</strong> ${album.visibility || '-'}</span>
+            </div>
+          </div>
         `;
         card.onclick = () => selectAlbum(album.id);
         const up = card.querySelector('[data-user-sub]');
@@ -3926,7 +3983,7 @@
       const album = state.selectedAlbum;
       const coverURL = state.albumCoverURLs[album.id] || '';
       $('tracksAlbumTitle').textContent = album.title || 'Album';
-      $('tracksAlbumMeta').textContent = `${album.artist || '-'} · by ${album.uploader_name || album.owner_sub || '-'} · ${rows.length} songs · ${fmt(total)} · rating ${avgRating > 0 ? avgRating.toFixed(1) : '-'} · ${album.visibility || '-'}`;
+      $('tracksAlbumMeta').textContent = `${album.artist || '-'} · by ${album.uploader_name || album.owner_sub || '-'} · ${album.genre || '-'} · ${rows.length} songs · ${fmt(total)} · rating ${avgRating > 0 ? avgRating.toFixed(1) : '-'} · ${album.visibility || '-'}`;
       const cover = $('tracksAlbumCover');
       if (coverURL) {
         cover.style.backgroundImage = `linear-gradient(180deg, rgba(0,0,0,0.04), rgba(0,0,0,0.5)), url('${coverURL}')`;
@@ -3945,11 +4002,24 @@
 
       rows.forEach((t, idx) => {
         const tr = document.createElement('tr');
+        const uploader = t.uploader_name || t.owner_sub || '-';
         tr.innerHTML = `
           <td>${idx + 1}</td>
-          <td>${t.title}</td>
+          <td>
+            <div class="track-main-title">${t.title}</div>
+            <div class="track-meta-line">
+              <span><strong>Artist</strong> ${t.artist || '-'}</span>
+              <span class="sep">·</span>
+              <span><strong>Album</strong> ${t.album || '-'}</span>
+              <span class="sep">·</span>
+              <span><strong>Genre</strong> ${t.genre || '-'}</span>
+              <span class="sep">·</span>
+              <span><strong>By</strong> <a class="uploader-link" data-uploader="${t.owner_sub || ''}">${uploader}</a></span>
+            </div>
+          </td>
           <td>${t.artist}</td>
           <td>${t.album}</td>
+          <td>${t.genre || '-'}</td>
           <td>${fmt(t.duration)}</td>
           <td>${renderLyricIndicators(t)}</td>
           <td>${state.me ? renderRateableStars(t.id, t.rating) : `<span class="stars">${renderStars(t.rating)}<span class="stars-meta">${renderTrackRating(t.rating)}</span></span>`}</td>
@@ -3999,7 +4069,7 @@
       });
 
       if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="9" class="muted">No tracks in current view.</td></tr>';
+        body.innerHTML = '<tr><td colspan="10" class="muted">No tracks in current view.</td></tr>';
       }
     }
 

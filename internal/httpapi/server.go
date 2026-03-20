@@ -171,6 +171,7 @@ func (s *Server) Router() http.Handler {
 	r.Handle("/rest/*", http.HandlerFunc(s.subsonicHandler))
 
 	r.Route("/api/v1", func(api chi.Router) {
+		api.Get("/", s.apiIndex)
 		api.Post("/auth/login", s.login)
 		api.Post("/auth/refresh", s.refresh)
 		api.Post("/auth/signup", s.signup)
@@ -268,6 +269,30 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "service": "hexsonic"})
+}
+
+func (s *Server) apiIndex(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service": "hexsonic",
+		"version": "v1",
+		"status":  "ok",
+		"docs":    "/docs/API_UPLOAD_INFO.md",
+		"health":  "/healthz",
+		"auth": map[string]string{
+			"login":   "/api/v1/auth/login",
+			"refresh": "/api/v1/auth/refresh",
+			"signup":  "/api/v1/auth/signup",
+		},
+		"public_endpoints": []string{
+			"/api/v1/albums",
+			"/api/v1/tracks",
+			"/api/v1/public/settings",
+		},
+		"upload_endpoints": []string{
+			"/api/v1/tracks/import",
+			"/api/v1/tracks/import-batch",
+		},
+	})
 }
 
 func (s *Server) adminProxyHandler(prefix, target string) http.Handler {
@@ -2050,6 +2075,7 @@ type importOptions struct {
 	Title      string
 	Artist     string
 	Album      string
+	Genre      string
 	Visibility string
 }
 
@@ -2092,6 +2118,7 @@ func (s *Server) importTrack(w http.ResponseWriter, r *http.Request) {
 		Title:      strings.TrimSpace(r.FormValue("title")),
 		Artist:     strings.TrimSpace(r.FormValue("artist")),
 		Album:      strings.TrimSpace(r.FormValue("album")),
+		Genre:      strings.TrimSpace(r.FormValue("genre")),
 		Visibility: fallback(r.FormValue("visibility"), "private"),
 	}
 
@@ -2133,6 +2160,7 @@ func (s *Server) importTrackBatch(w http.ResponseWriter, r *http.Request) {
 	opts := importOptions{
 		Artist:     strings.TrimSpace(r.FormValue("artist")),
 		Album:      strings.TrimSpace(r.FormValue("album")),
+		Genre:      strings.TrimSpace(r.FormValue("genre")),
 		Visibility: fallback(r.FormValue("visibility"), "private"),
 	}
 
@@ -2206,7 +2234,7 @@ func (s *Server) importSingleTrack(ctx context.Context, claims auth.Claims, f mu
 	title := chooseImportedTitle(opts.Title, probe.Title, fileTitle)
 	artist := normalizeImportedText(fallback(opts.Artist, fallback(probe.Artist, "Unknown Artist")), "Unknown Artist")
 	album := normalizeImportedText(fallback(opts.Album, fallback(probe.Album, "Unknown Album")), "Unknown Album")
-	genre := normalizeImportedText(strings.TrimSpace(probe.Genre), "")
+	genre := normalizeImportedText(fallback(opts.Genre, strings.TrimSpace(probe.Genre)), "")
 
 	ext := strings.TrimPrefix(filepath.Ext(h.Filename), ".")
 	if ext == "" {
@@ -2975,19 +3003,18 @@ func (s *Server) manageUpdateTrack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Title      string `json:"title"`
-		Artist     string `json:"artist"`
-		Album      string `json:"album"`
-		Genre      string `json:"genre"`
-		Visibility string `json:"visibility"`
-		LyricsSRT  string `json:"lyrics_srt"`
-		LyricsTXT  string `json:"lyrics_txt"`
+		Title      *string `json:"title"`
+		Artist     *string `json:"artist"`
+		Album      *string `json:"album"`
+		Genre      *string `json:"genre"`
+		Visibility *string `json:"visibility"`
+		LyricsSRT  *string `json:"lyrics_srt"`
+		LyricsTXT  *string `json:"lyrics_txt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
-	vis := normalizeVisibility(req.Visibility)
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2995,7 +3022,7 @@ func (s *Server) manageUpdateTrack(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 
-	var ownerSub string
+	var ownerSub, currentTitle, currentArtist, currentAlbum, currentGenre, currentVisibility, currentLyricsSRT, currentLyricsTXT string
 	if err := tx.QueryRow(r.Context(), `SELECT owner_sub FROM tracks WHERE id=$1`, trackID).Scan(&ownerSub); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.NotFound(w, r)
@@ -3004,9 +3031,48 @@ func (s *Server) manageUpdateTrack(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	artist := fallback(req.Artist, "Unknown Artist")
-	album := fallback(req.Album, "Unknown Album")
-	title := fallback(req.Title, "Untitled")
+	if err := tx.QueryRow(r.Context(), `
+		SELECT t.title, COALESCE(ar.name,''), COALESCE(al.title,''), COALESCE(t.genre,''), t.visibility, COALESCE(t.lyrics_srt,''), COALESCE(t.lyrics_txt,'')
+		FROM tracks t
+		LEFT JOIN artists ar ON ar.id=t.artist_id
+		LEFT JOIN albums al ON al.id=t.album_id
+		WHERE t.id=$1
+	`, trackID).Scan(&currentTitle, &currentArtist, &currentAlbum, &currentGenre, &currentVisibility, &currentLyricsSRT, &currentLyricsTXT); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	title := currentTitle
+	if req.Title != nil {
+		title = fallback(strings.TrimSpace(*req.Title), "Untitled")
+	}
+	artist := currentArtist
+	if req.Artist != nil {
+		artist = fallback(strings.TrimSpace(*req.Artist), "Unknown Artist")
+	}
+	album := currentAlbum
+	if req.Album != nil {
+		album = fallback(strings.TrimSpace(*req.Album), "Unknown Album")
+	}
+	genre := currentGenre
+	if req.Genre != nil {
+		genre = strings.TrimSpace(*req.Genre)
+	}
+	vis := currentVisibility
+	if req.Visibility != nil {
+		vis = normalizeVisibility(strings.TrimSpace(*req.Visibility))
+	}
+	lyricsSRT := currentLyricsSRT
+	if req.LyricsSRT != nil {
+		lyricsSRT = *req.LyricsSRT
+	}
+	lyricsTXT := currentLyricsTXT
+	if req.LyricsTXT != nil {
+		lyricsTXT = *req.LyricsTXT
+	}
 	artistID, err := upsertArtist(r.Context(), tx, artist)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -3016,7 +3082,7 @@ func (s *Server) manageUpdateTrack(w http.ResponseWriter, r *http.Request) {
 	if vis == "public" {
 		albumVisibility = "public"
 	}
-	albumID, err := upsertAlbum(r.Context(), tx, artistID, album, albumVisibility, ownerSub, req.Genre)
+	albumID, err := upsertAlbum(r.Context(), tx, artistID, album, albumVisibility, ownerSub, genre)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -3025,7 +3091,7 @@ func (s *Server) manageUpdateTrack(w http.ResponseWriter, r *http.Request) {
 		UPDATE tracks
 		SET title=$2, artist_id=$3, album_id=$4, genre=$5, visibility=$6, lyrics_srt=$7, lyrics_txt=$8
 		WHERE id=$1
-	`, trackID, title, artistID, albumID, strings.TrimSpace(req.Genre), vis, req.LyricsSRT, req.LyricsTXT); err != nil {
+	`, trackID, title, artistID, albumID, genre, vis, lyricsSRT, lyricsTXT); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -3288,18 +3354,14 @@ func (s *Server) manageUpdateAlbum(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Title      string `json:"title"`
-		Artist     string `json:"artist"`
-		Visibility string `json:"visibility"`
-		Genre      string `json:"genre"`
+		Title      *string `json:"title"`
+		Artist     *string `json:"artist"`
+		Visibility *string `json:"visibility"`
+		Genre      *string `json:"genre"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
-	}
-	vis := strings.TrimSpace(req.Visibility)
-	if vis != "public" && vis != "private" {
-		vis = "private"
 	}
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {
@@ -3307,14 +3369,49 @@ func (s *Server) manageUpdateAlbum(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	artistID, err := upsertArtist(r.Context(), tx, fallback(req.Artist, "Unknown Artist"))
+	var currentTitle, currentArtist, currentVisibility, currentGenre string
+	if err := tx.QueryRow(r.Context(), `
+		SELECT a.title, COALESCE(ar.name,''), a.visibility, COALESCE(a.genre,'')
+		FROM albums a
+		LEFT JOIN artists ar ON ar.id=a.artist_id
+		WHERE a.id=$1
+	`, albumID).Scan(&currentTitle, &currentArtist, &currentVisibility, &currentGenre); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	title := currentTitle
+	if req.Title != nil {
+		title = fallback(strings.TrimSpace(*req.Title), "Unknown Album")
+	}
+	artist := currentArtist
+	if req.Artist != nil {
+		artist = fallback(strings.TrimSpace(*req.Artist), "Unknown Artist")
+	}
+	genre := currentGenre
+	if req.Genre != nil {
+		genre = strings.TrimSpace(*req.Genre)
+	}
+	vis := currentVisibility
+	if req.Visibility != nil {
+		switch strings.TrimSpace(*req.Visibility) {
+		case "public", "private":
+			vis = strings.TrimSpace(*req.Visibility)
+		default:
+			vis = "private"
+		}
+	}
+	artistID, err := upsertArtist(r.Context(), tx, artist)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `
 		UPDATE albums SET title=$2, artist_id=$3, visibility=$4, genre=$5 WHERE id=$1
-	`, albumID, fallback(req.Title, "Unknown Album"), artistID, vis, strings.TrimSpace(req.Genre)); err != nil {
+	`, albumID, title, artistID, vis, genre); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
