@@ -8,6 +8,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -54,6 +55,8 @@ type Server struct {
 }
 
 var registerMetricsOnce sync.Once
+var errProfileAliasTaken = errors.New("profile alias already taken")
+var errDisplayNameChangeCooldown = errors.New("display name change cooldown active")
 
 type Track struct {
 	ID           string  `json:"id"`
@@ -185,9 +188,11 @@ func (s *Server) Router() http.Handler {
 		api.Get("/tracks/{trackID}/comments", s.listComments)
 		api.Get("/stream/{trackID}", s.streamTrack)
 		api.Get("/users/{userSub}/avatar", s.userAvatar)
+		api.Get("/users/{userSub}/banner", s.userBanner)
 		api.Get("/users/{userSub}/profile", s.userPublicProfile)
 		api.Get("/users/{userSub}/uploads", s.userUploads)
 		api.Get("/users/{userSub}/comments", s.listUserProfileComments)
+		api.Get("/creators/highscore", s.creatorHighscore)
 		api.Post("/streams/sign", s.signStream)
 		api.Get("/playlists", s.listPlaylists)
 		api.Get("/playlists/{playlistID}", s.getPlaylist)
@@ -200,9 +205,16 @@ func (s *Server) Router() http.Handler {
 			priv.Get("/me/profile", s.meProfileGet)
 			priv.Patch("/me/profile", s.meProfileUpdate)
 			priv.Post("/me/avatar", s.meAvatarUpload)
+			priv.Post("/me/banner", s.meBannerUpload)
 			priv.Post("/me/password", s.mePasswordUpdate)
 			priv.Post("/me/subsonic-password", s.meSubsonicPasswordUpdate)
 			priv.Delete("/me/subsonic-password", s.meSubsonicPasswordDelete)
+			priv.Get("/me/notifications", s.meNotifications)
+			priv.Post("/me/notifications/{notificationID}/read", s.meNotificationRead)
+			priv.Post("/me/notifications/read-all", s.meNotificationsReadAll)
+			priv.Get("/favorites", s.listFavorites)
+			priv.Post("/favorites", s.addFavorite)
+			priv.Delete("/favorites/{kind}/{targetID}", s.removeFavorite)
 			priv.Post("/albums/{albumID}/comments", s.createAlbumComment)
 			priv.Post("/albums/{albumID}/cover-sign", s.signAlbumCover)
 			priv.Post("/tracks/{trackID}/comments", s.createComment)
@@ -524,7 +536,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.seedUserDisplayName(r.Context(), claims.Subject, claims.Username)
-	creatorBadge, _ := s.userCreatorBadge(r.Context(), claims.Subject)
+	creatorBadge, _ := s.userIsCreator(r.Context(), claims.Subject)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"subject":       claims.Subject,
 		"username":      claims.Username,
@@ -540,7 +552,7 @@ func (s *Server) meProfileGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
 	}
-	displayName, bio, avatarPath, err := s.userProfileBySub(r.Context(), claims.Subject)
+	profile, err := s.userProfileSettingsBySub(r.Context(), claims.Subject)
 	if err != nil {
 		http.Error(w, "profile unavailable", http.StatusInternalServerError)
 		return
@@ -550,20 +562,34 @@ func (s *Server) meProfileGet(w http.ResponseWriter, r *http.Request) {
 		email = e
 	}
 	avatarURL := ""
-	if strings.TrimSpace(avatarPath) != "" {
+	if strings.TrimSpace(profile.AvatarPath) != "" {
 		avatarURL = fmt.Sprintf("/api/v1/users/%s/avatar?v=%d", url.PathEscape(claims.Subject), time.Now().Unix())
 	}
-	creatorBadge, _ := s.userCreatorBadge(r.Context(), claims.Subject)
+	creatorBadge, _ := s.userIsCreator(r.Context(), claims.Subject)
 	hasSubsonicPassword, _ := s.userHasSubsonicPassword(r.Context(), claims.Subject)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"subject":               claims.Subject,
-		"username":              claims.Username,
-		"email":                 email,
-		"display_name":          displayName,
-		"bio":                   bio,
-		"avatar_url":            avatarURL,
-		"creator_badge":         creatorBadge,
-		"has_subsonic_password": hasSubsonicPassword,
+		"subject":                          claims.Subject,
+		"username":                         claims.Username,
+		"email":                            email,
+		"display_name":                     profile.DisplayName,
+		"bio":                              profile.Bio,
+		"status_line":                      profile.StatusLine,
+		"accent_color":                     profile.AccentColor,
+		"profile_role":                     normalizedProfileRole(profile.ProfileRole, creatorBadge),
+		"display_name_changed_at":          profile.DisplayNameChangedAt,
+		"display_name_change_available_at": nextDisplayNameChangeTime(profile.DisplayNameChangedAt),
+		"featured_album_id":                profile.FeaturedAlbumID,
+		"featured_album_ids":               profile.FeaturedAlbumIDs,
+		"featured_playlist_id":             profile.FeaturedPlaylistID,
+		"guest_show_followers":             profile.GuestShowFollowers,
+		"guest_show_playlists":             profile.GuestShowPlaylists,
+		"guest_show_favorites":             profile.GuestShowFavorites,
+		"guest_show_stats":                 profile.GuestShowStats,
+		"guest_show_uploads":               profile.GuestShowUploads,
+		"avatar_url":                       avatarURL,
+		"banner_url":                       userBannerURL(claims.Subject, profile.BannerPath),
+		"creator_badge":                    creatorBadge,
+		"has_subsonic_password":            hasSubsonicPassword,
 	})
 }
 
@@ -574,9 +600,19 @@ func (s *Server) meProfileUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		DisplayName string `json:"display_name"`
-		Bio         string `json:"bio"`
-		Email       string `json:"email"`
+		DisplayName        string  `json:"display_name"`
+		Bio                string  `json:"bio"`
+		Email              string  `json:"email"`
+		StatusLine         string  `json:"status_line"`
+		AccentColor        string  `json:"accent_color"`
+		FeaturedAlbumID    *int64  `json:"featured_album_id"`
+		FeaturedAlbumIDs   []int64 `json:"featured_album_ids"`
+		FeaturedPlaylistID *int64  `json:"featured_playlist_id"`
+		GuestShowFollowers *bool   `json:"guest_show_followers"`
+		GuestShowPlaylists *bool   `json:"guest_show_playlists"`
+		GuestShowFavorites *bool   `json:"guest_show_favorites"`
+		GuestShowStats     *bool   `json:"guest_show_stats"`
+		GuestShowUploads   *bool   `json:"guest_show_uploads"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
@@ -592,7 +628,52 @@ func (s *Server) meProfileUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bio too long", http.StatusBadRequest)
 		return
 	}
-	if err := s.upsertUserProfile(r.Context(), claims.Subject, displayName, bio); err != nil {
+	statusLine := strings.TrimSpace(req.StatusLine)
+	if len(statusLine) > 180 {
+		http.Error(w, "status_line too long", http.StatusBadRequest)
+		return
+	}
+	creatorBadge, _ := s.userIsCreator(r.Context(), claims.Subject)
+	accentColor := normalizedAccentColor(req.AccentColor)
+	featuredAlbumIDs := normalizeFeaturedAlbumIDs(req.FeaturedAlbumIDs, req.FeaturedAlbumID)
+	guestShowFollowers := true
+	guestShowPlaylists := true
+	guestShowFavorites := false
+	guestShowStats := true
+	guestShowUploads := true
+	if req.GuestShowFollowers != nil {
+		guestShowFollowers = *req.GuestShowFollowers
+	}
+	if req.GuestShowPlaylists != nil {
+		guestShowPlaylists = *req.GuestShowPlaylists
+	}
+	if req.GuestShowFavorites != nil {
+		guestShowFavorites = *req.GuestShowFavorites
+	}
+	if req.GuestShowStats != nil {
+		guestShowStats = *req.GuestShowStats
+	}
+	if req.GuestShowUploads != nil {
+		guestShowUploads = *req.GuestShowUploads
+	}
+	if !creatorBadge {
+		req.FeaturedAlbumID = nil
+		featuredAlbumIDs = nil
+		req.FeaturedPlaylistID = nil
+	}
+	if err := s.enforceDisplayNameChangePolicy(r.Context(), claims.Subject, displayName, auth.HasRole(claims, "admin")); err != nil {
+		if errors.Is(err, errDisplayNameChangeCooldown) {
+			http.Error(w, "display_name can only be changed once every 30 days", http.StatusTooManyRequests)
+			return
+		}
+		http.Error(w, "display_name policy check failed", http.StatusInternalServerError)
+		return
+	}
+	if err := s.upsertRichUserProfile(r.Context(), claims.Subject, displayName, bio, statusLine, accentColor, normalizedProfileRole("", creatorBadge), featuredAlbumIDs, req.FeaturedPlaylistID, guestShowFollowers, guestShowPlaylists, guestShowFavorites, guestShowStats, guestShowUploads); err != nil {
+		if errors.Is(err, errProfileAliasTaken) {
+			http.Error(w, "display_name already in use", http.StatusConflict)
+			return
+		}
 		http.Error(w, "save profile failed", http.StatusInternalServerError)
 		return
 	}
@@ -609,8 +690,12 @@ func (s *Server) meProfileUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = s.writeAudit(r.Context(), claims.Subject, "user.update_profile", "user", claims.Subject, map[string]any{
-		"display_name": displayName,
-		"email":        email,
+		"display_name":         displayName,
+		"email":                email,
+		"status_line":          statusLine,
+		"accent_color":         accentColor,
+		"featured_album_ids":   featuredAlbumIDs,
+		"featured_playlist_id": req.FeaturedPlaylistID,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
@@ -630,6 +715,30 @@ func (s *Server) meAvatarUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":     "updated",
 		"avatar_url": fmt.Sprintf("/api/v1/users/%s/avatar?v=%d", url.PathEscape(claims.Subject), time.Now().Unix()),
+		"path":       target,
+	})
+}
+
+func (s *Server) meBannerUpload(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	creatorBadge, _ := s.userIsCreator(r.Context(), claims.Subject)
+	if !creatorBadge && !auth.HasRole(claims, "admin") {
+		http.Error(w, "creator badge required", http.StatusForbidden)
+		return
+	}
+	target, err := s.saveUserBannerFromRequest(r.Context(), r, claims.Subject)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	_ = s.writeAudit(r.Context(), claims.Subject, "user.update_banner", "user", claims.Subject, nil)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     "updated",
+		"banner_url": userBannerURL(claims.Subject, target),
 		"path":       target,
 	})
 }
@@ -2538,9 +2647,18 @@ func (s *Server) albumCover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) userAvatar(w http.ResponseWriter, r *http.Request) {
-	userSub := strings.TrimSpace(chi.URLParam(r, "userSub"))
-	if userSub == "" {
+	userIdentifier := strings.TrimSpace(chi.URLParam(r, "userSub"))
+	if userIdentifier == "" {
 		http.NotFound(w, r)
+		return
+	}
+	userSub, err := s.resolveUserSubjectByIdentifier(r.Context(), userIdentifier)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "avatar lookup failed", http.StatusInternalServerError)
 		return
 	}
 	var avatarPath string
@@ -2583,6 +2701,63 @@ func (s *Server) userAvatar(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ctype)
 	http.ServeContent(w, r, filepath.Base(avatarPath), st.ModTime(), f)
+}
+
+func (s *Server) userBanner(w http.ResponseWriter, r *http.Request) {
+	userIdentifier := strings.TrimSpace(chi.URLParam(r, "userSub"))
+	if userIdentifier == "" {
+		http.NotFound(w, r)
+		return
+	}
+	userSub, err := s.resolveUserSubjectByIdentifier(r.Context(), userIdentifier)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "banner lookup failed", http.StatusInternalServerError)
+		return
+	}
+	var bannerPath string
+	if err := s.db.QueryRow(r.Context(), `SELECT COALESCE(banner_path,'') FROM user_profiles WHERE user_sub=$1`, userSub).Scan(&bannerPath); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "banner lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if strings.TrimSpace(bannerPath) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	f, err := os.Open(bannerPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "open banner failed", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		http.Error(w, "stat banner failed", http.StatusInternalServerError)
+		return
+	}
+	buf := make([]byte, 512)
+	n, _ := f.Read(buf)
+	_, _ = f.Seek(0, io.SeekStart)
+	ctype := http.DetectContentType(buf[:n])
+	if ctype == "" || ctype == "application/octet-stream" {
+		ctype = mime.TypeByExtension(strings.ToLower(filepath.Ext(bannerPath)))
+		if ctype == "" {
+			ctype = "image/jpeg"
+		}
+	}
+	w.Header().Set("Content-Type", ctype)
+	http.ServeContent(w, r, filepath.Base(bannerPath), st.ModTime(), f)
 }
 
 func (s *Server) signAlbumCover(w http.ResponseWriter, r *http.Request) {
@@ -2860,6 +3035,7 @@ func (s *Server) importSingleTrack(ctx context.Context, claims auth.Claims, f mu
 	if err := tx.Commit(ctx); err != nil {
 		return importResult{}, http.StatusInternalServerError, err
 	}
+	s.createFollowerReleaseNotifications(ctx, claims.Subject, albumID, trackID, title)
 
 	if s.cfg.EnableDerivedSync {
 		go s.processDerived(trackID, finalPath)
@@ -3039,6 +3215,11 @@ func (s *Server) createComment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	var ownerSub, trackTitle string
+	if err := s.db.QueryRow(r.Context(), `SELECT owner_sub, COALESCE(title,'') FROM tracks WHERE id=$1`, trackID).Scan(&ownerSub, &trackTitle); err == nil {
+		tid := strings.TrimSpace(trackID)
+		s.createCreatorCommentNotification(r.Context(), ownerSub, claims.Subject, claims.Username, "creator_track_comment", "New track comment", fmt.Sprintf("commented on your track \"%s\": %s", trackTitle, notificationSnippet(req.Content, 140)), &tid)
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "created"})
 }
 
@@ -3113,6 +3294,10 @@ func (s *Server) createAlbumComment(w http.ResponseWriter, r *http.Request) {
 	`, albumID, claims.Subject, claims.Username, strings.TrimSpace(req.Content)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	var ownerSub, albumTitle string
+	if err := s.db.QueryRow(r.Context(), `SELECT owner_sub, COALESCE(title,'') FROM albums WHERE id=$1`, albumID).Scan(&ownerSub, &albumTitle); err == nil {
+		s.createCreatorCommentNotification(r.Context(), ownerSub, claims.Subject, claims.Username, "creator_album_comment", "New album comment", fmt.Sprintf("commented on your album \"%s\": %s", albumTitle, notificationSnippet(req.Content, 140)), nil)
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "created"})
 }
@@ -3208,9 +3393,18 @@ func (s *Server) rateTrack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) userPublicProfile(w http.ResponseWriter, r *http.Request) {
-	targetSub := strings.TrimSpace(chi.URLParam(r, "userSub"))
-	if targetSub == "" {
+	targetIdentifier := strings.TrimSpace(chi.URLParam(r, "userSub"))
+	if targetIdentifier == "" {
 		http.Error(w, "invalid user", http.StatusBadRequest)
+		return
+	}
+	targetSub, err := s.resolveUserSubjectByIdentifier(r.Context(), targetIdentifier)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "profile unavailable", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "profile unavailable", http.StatusInternalServerError)
 		return
 	}
 	claims, hasClaims := auth.FromContext(r.Context())
@@ -3218,7 +3412,7 @@ func (s *Server) userPublicProfile(w http.ResponseWriter, r *http.Request) {
 	if hasClaims {
 		viewerSub = claims.Subject
 	}
-	displayName, bio, avatarPath, err := s.userProfileBySub(r.Context(), targetSub)
+	profile, err := s.userProfileSettingsBySub(r.Context(), targetSub)
 	if err != nil {
 		http.Error(w, "profile unavailable", http.StatusInternalServerError)
 		return
@@ -3233,30 +3427,121 @@ func (s *Server) userPublicProfile(w http.ResponseWriter, r *http.Request) {
 	if viewerSub != "" && viewerSub != targetSub {
 		_ = s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM follows WHERE follower_sub=$1 AND followed_sub=$2)`, viewerSub, targetSub).Scan(&isFollowing)
 	}
-	creatorBadge, _ := s.userCreatorBadge(r.Context(), targetSub)
+	creatorBadge, _ := s.userIsCreator(r.Context(), targetSub)
 	avatarURL := ""
-	if strings.TrimSpace(avatarPath) != "" {
+	if strings.TrimSpace(profile.AvatarPath) != "" {
 		avatarURL = fmt.Sprintf("/api/v1/users/%s/avatar?v=%d", url.PathEscape(targetSub), time.Now().Unix())
 	}
+	bannerURL := userBannerURL(targetSub, profile.BannerPath)
+	profileRole := normalizedProfileRole(profile.ProfileRole, creatorBadge)
+	isOwnerView := viewerSub != "" && viewerSub == targetSub
+	if !isOwnerView && !profile.GuestShowFollowers {
+		followerCount = 0
+		followingCount = 0
+	}
+	if !isOwnerView && !profile.GuestShowStats {
+		trackCount = 0
+		albumCount = 0
+	}
+	if !creatorBadge {
+		followerCount = 0
+		followingCount = 0
+	}
+	var playlistCount, favoritesCount int64
+	_ = s.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM playlists WHERE owner_sub=$1 AND visibility='public'`, targetSub).Scan(&playlistCount)
+	_ = s.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM favorites WHERE user_sub=$1`, targetSub).Scan(&favoritesCount)
+	featuredAlbums := make([]map[string]any, 0, 4)
+	if creatorBadge && len(profile.FeaturedAlbumIDs) > 0 {
+		rows, err := s.db.Query(r.Context(), `
+			SELECT a.id, a.title, COALESCE(ar.name,''), COALESCE(a.genre,''), a.visibility
+			FROM unnest($1::bigint[]) WITH ORDINALITY AS fa(album_id, ord)
+			JOIN albums a ON a.id=fa.album_id
+			LEFT JOIN artists ar ON ar.id=a.artist_id
+			WHERE a.owner_sub=$2
+			ORDER BY fa.ord
+		`, profile.FeaturedAlbumIDs, targetSub)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var albumID int64
+				var title, artist, genre, visibility string
+				if err := rows.Scan(&albumID, &title, &artist, &genre, &visibility); err == nil && (visibility == "public" || viewerSub == targetSub) {
+					featuredAlbums = append(featuredAlbums, map[string]any{"id": albumID, "title": title, "artist": artist, "genre": genre, "visibility": visibility})
+				}
+			}
+		}
+	}
+	var featuredAlbum map[string]any
+	if len(featuredAlbums) > 0 {
+		featuredAlbum = featuredAlbums[0]
+	}
+	var featuredPlaylist map[string]any
+	if profile.FeaturedPlaylistID != nil {
+		var playlistID int64
+		var name, visibility string
+		err := s.db.QueryRow(r.Context(), `SELECT id, name, visibility FROM playlists WHERE id=$1 AND owner_sub=$2`, *profile.FeaturedPlaylistID, targetSub).Scan(&playlistID, &name, &visibility)
+		if err == nil && (visibility == "public" || viewerSub == targetSub) {
+			featuredPlaylist = map[string]any{"id": playlistID, "name": name, "visibility": visibility}
+		}
+	}
+	var topTrackID, topTrackTitle string
+	var topTrackRating float64
+	topTrack := map[string]any{}
+	_ = s.db.QueryRow(r.Context(), `
+		SELECT t.id::text, t.title, COALESCE(AVG(r.rating),0)::float8
+		FROM tracks t
+		LEFT JOIN ratings r ON r.track_id=t.id
+		WHERE t.owner_sub=$1
+		GROUP BY t.id, t.title
+		ORDER BY COALESCE(AVG(r.rating),0) DESC, t.created_at DESC
+		LIMIT 1
+	`, targetSub).Scan(&topTrackID, &topTrackTitle, &topTrackRating)
+	if topTrackID != "" {
+		topTrack = map[string]any{"id": topTrackID, "title": topTrackTitle, "rating": topTrackRating}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"subject":       targetSub,
-		"display_name":  displayName,
-		"bio":           bio,
-		"avatar_url":    avatarURL,
-		"creator_badge": creatorBadge,
-		"followers":     followerCount,
-		"following":     followingCount,
-		"track_uploads": trackCount,
-		"album_uploads": albumCount,
-		"is_following":  isFollowing,
-		"is_self":       viewerSub != "" && viewerSub == targetSub,
+		"subject":              targetSub,
+		"display_name":         profile.DisplayName,
+		"bio":                  profile.Bio,
+		"status_line":          profile.StatusLine,
+		"accent_color":         profile.AccentColor,
+		"avatar_url":           avatarURL,
+		"banner_url":           bannerURL,
+		"creator_badge":        creatorBadge,
+		"profile_role":         profileRole,
+		"followers":            followerCount,
+		"following":            followingCount,
+		"track_uploads":        trackCount,
+		"album_uploads":        albumCount,
+		"playlist_count":       playlistCount,
+		"favorites_count":      favoritesCount,
+		"is_following":         isFollowing,
+		"is_self":              isOwnerView,
+		"guest_show_followers": profile.GuestShowFollowers,
+		"guest_show_playlists": profile.GuestShowPlaylists,
+		"guest_show_favorites": profile.GuestShowFavorites,
+		"guest_show_stats":     profile.GuestShowStats,
+		"guest_show_uploads":   profile.GuestShowUploads,
+		"featured_album":       featuredAlbum,
+		"featured_albums":      featuredAlbums,
+		"featured_playlist":    featuredPlaylist,
+		"top_track":            topTrack,
 	})
 }
 
 func (s *Server) userUploads(w http.ResponseWriter, r *http.Request) {
-	targetSub := strings.TrimSpace(chi.URLParam(r, "userSub"))
-	if targetSub == "" {
+	targetIdentifier := strings.TrimSpace(chi.URLParam(r, "userSub"))
+	if targetIdentifier == "" {
 		http.Error(w, "invalid user", http.StatusBadRequest)
+		return
+	}
+	targetSub, err := s.resolveUserSubjectByIdentifier(r.Context(), targetIdentifier)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "invalid user", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "invalid user", http.StatusInternalServerError)
 		return
 	}
 	claims, hasClaims := auth.FromContext(r.Context())
@@ -3267,6 +3552,8 @@ func (s *Server) userUploads(w http.ResponseWriter, r *http.Request) {
 		isAdmin = auth.HasRole(claims, "admin")
 	}
 	self := viewerSub != "" && viewerSub == targetSub
+	profile, _ := s.userProfileSettingsBySub(r.Context(), targetSub)
+	creatorBadge, _ := s.userIsCreator(r.Context(), targetSub)
 	canSeeFollowersOnly := false
 	if viewerSub != "" && viewerSub != targetSub {
 		_ = s.db.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM follows WHERE follower_sub=$1 AND followed_sub=$2)`, viewerSub, targetSub).Scan(&canSeeFollowersOnly)
@@ -3274,15 +3561,17 @@ func (s *Server) userUploads(w http.ResponseWriter, r *http.Request) {
 
 	albumWhere := `a.owner_sub=$1 AND a.visibility='public'`
 	trackWhere := `t.owner_sub=$1 AND t.visibility='public'`
+	playlistWhere := `p.owner_sub=$1 AND p.visibility='public'`
 	args := []any{targetSub}
 	if isAdmin || self {
 		albumWhere = `a.owner_sub=$1`
 		trackWhere = `t.owner_sub=$1`
+		playlistWhere = `p.owner_sub=$1`
 	} else if canSeeFollowersOnly {
 		trackWhere = `t.owner_sub=$1 AND (t.visibility='public' OR t.visibility='followers_only')`
 	}
 	alRows, err := s.db.Query(r.Context(), `
-		SELECT a.id, a.title, COALESCE(ar.name,''), a.visibility, a.created_at::text
+		SELECT a.id, a.title, COALESCE(ar.name,''), COALESCE(a.genre,''), a.visibility, a.created_at::text
 		FROM albums a
 		LEFT JOIN artists ar ON ar.id=a.artist_id
 		WHERE `+albumWhere+`
@@ -3297,12 +3586,12 @@ func (s *Server) userUploads(w http.ResponseWriter, r *http.Request) {
 	albums := make([]map[string]any, 0, 64)
 	for alRows.Next() {
 		var id int64
-		var title, artist, vis, created string
-		if err := alRows.Scan(&id, &title, &artist, &vis, &created); err != nil {
+		var title, artist, genre, vis, created string
+		if err := alRows.Scan(&id, &title, &artist, &genre, &vis, &created); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		albums = append(albums, map[string]any{"id": id, "title": title, "artist": artist, "visibility": vis, "created_at": created})
+		albums = append(albums, map[string]any{"id": id, "title": title, "artist": artist, "genre": genre, "visibility": vis, "created_at": created})
 	}
 
 	trRows, err := s.db.Query(r.Context(), `
@@ -3332,7 +3621,106 @@ func (s *Server) userUploads(w http.ResponseWriter, r *http.Request) {
 		}
 		tracks = append(tracks, map[string]any{"id": id, "title": title, "artist": artist, "album": album, "rating": rating, "visibility": vis, "created_at": created})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"albums": albums, "tracks": tracks})
+	plRows, err := s.db.Query(r.Context(), `
+		SELECT p.id, p.name, p.visibility, COALESCE(COUNT(pt.track_id),0)::bigint
+		FROM playlists p
+		LEFT JOIN playlist_tracks pt ON pt.playlist_id=p.id
+		WHERE `+playlistWhere+`
+		GROUP BY p.id, p.name, p.visibility
+		ORDER BY p.updated_at DESC, p.created_at DESC
+		LIMIT 100
+	`, args...)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer plRows.Close()
+	playlists := make([]map[string]any, 0, 32)
+	for plRows.Next() {
+		var playlistID, trackCount int64
+		var name, visibility string
+		if err := plRows.Scan(&playlistID, &name, &visibility, &trackCount); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		playlists = append(playlists, map[string]any{"id": playlistID, "name": name, "visibility": visibility, "track_count": trackCount})
+	}
+	favorites := map[string]any{"tracks": []map[string]any{}, "albums": []map[string]any{}, "playlists": []map[string]any{}}
+	canShowFavorites := self || isAdmin || profile.GuestShowFavorites
+	canShowPlaylists := self || isAdmin || profile.GuestShowPlaylists
+	canShowUploads := self || isAdmin || profile.GuestShowUploads || creatorBadge
+	if !canShowUploads {
+		albums = []map[string]any{}
+		tracks = []map[string]any{}
+	}
+	if !canShowPlaylists {
+		playlists = []map[string]any{}
+	}
+	if canShowFavorites {
+		trackFavRows, _ := s.db.Query(r.Context(), `
+			SELECT t.id::text, t.title, COALESCE(ar.name,''), COALESCE(al.title,'')
+			FROM favorites f
+			JOIN tracks t ON t.id=f.track_id
+			LEFT JOIN artists ar ON ar.id=t.artist_id
+			LEFT JOIN albums al ON al.id=t.album_id
+			WHERE f.user_sub=$1 AND f.target_kind='track'
+			ORDER BY f.created_at DESC
+			LIMIT 24
+		`, targetSub)
+		if trackFavRows != nil {
+			defer trackFavRows.Close()
+			items := make([]map[string]any, 0, 24)
+			for trackFavRows.Next() {
+				var id, title, artist, album string
+				if err := trackFavRows.Scan(&id, &title, &artist, &album); err == nil {
+					items = append(items, map[string]any{"id": id, "title": title, "artist": artist, "album": album})
+				}
+			}
+			favorites["tracks"] = items
+		}
+		albumFavRows, _ := s.db.Query(r.Context(), `
+			SELECT a.id, a.title, COALESCE(ar.name,'')
+			FROM favorites f
+			JOIN albums a ON a.id=f.album_id
+			LEFT JOIN artists ar ON ar.id=a.artist_id
+			WHERE f.user_sub=$1 AND f.target_kind='album'
+			ORDER BY f.created_at DESC
+			LIMIT 24
+		`, targetSub)
+		if albumFavRows != nil {
+			defer albumFavRows.Close()
+			items := make([]map[string]any, 0, 24)
+			for albumFavRows.Next() {
+				var id int64
+				var title, artist string
+				if err := albumFavRows.Scan(&id, &title, &artist); err == nil {
+					items = append(items, map[string]any{"id": id, "title": title, "artist": artist})
+				}
+			}
+			favorites["albums"] = items
+		}
+		playlistFavRows, _ := s.db.Query(r.Context(), `
+			SELECT p.id, p.name, p.visibility
+			FROM favorites f
+			JOIN playlists p ON p.id=f.playlist_id
+			WHERE f.user_sub=$1 AND f.target_kind='playlist'
+			ORDER BY f.created_at DESC
+			LIMIT 24
+		`, targetSub)
+		if playlistFavRows != nil {
+			defer playlistFavRows.Close()
+			items := make([]map[string]any, 0, 24)
+			for playlistFavRows.Next() {
+				var id int64
+				var name, visibility string
+				if err := playlistFavRows.Scan(&id, &name, &visibility); err == nil {
+					items = append(items, map[string]any{"id": id, "name": name, "visibility": visibility})
+				}
+			}
+			favorites["playlists"] = items
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"albums": albums, "tracks": tracks, "playlists": playlists, "favorites": favorites})
 }
 
 func (s *Server) creatorStats(w http.ResponseWriter, r *http.Request) {
@@ -3595,9 +3983,18 @@ func (s *Server) createUserProfileComment(w http.ResponseWriter, r *http.Request
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
 	}
-	targetSub := strings.TrimSpace(chi.URLParam(r, "userSub"))
-	if targetSub == "" {
+	targetIdentifier := strings.TrimSpace(chi.URLParam(r, "userSub"))
+	if targetIdentifier == "" {
 		http.Error(w, "invalid target", http.StatusBadRequest)
+		return
+	}
+	targetSub, err := s.resolveUserSubjectByIdentifier(r.Context(), targetIdentifier)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "invalid target", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "invalid target", http.StatusInternalServerError)
 		return
 	}
 	var req struct {
@@ -3618,13 +4015,23 @@ func (s *Server) createUserProfileComment(w http.ResponseWriter, r *http.Request
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.createCreatorCommentNotification(r.Context(), targetSub, claims.Subject, claims.Username, "creator_profile_comment", "New profile comment", fmt.Sprintf("commented on your profile: %s", notificationSnippet(req.Content, 140)), nil)
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "created"})
 }
 
 func (s *Server) listUserProfileComments(w http.ResponseWriter, r *http.Request) {
-	targetSub := strings.TrimSpace(chi.URLParam(r, "userSub"))
-	if targetSub == "" {
+	targetIdentifier := strings.TrimSpace(chi.URLParam(r, "userSub"))
+	if targetIdentifier == "" {
 		http.Error(w, "invalid target", http.StatusBadRequest)
+		return
+	}
+	targetSub, err := s.resolveUserSubjectByIdentifier(r.Context(), targetIdentifier)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "invalid target", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "invalid target", http.StatusInternalServerError)
 		return
 	}
 	rows, err := s.db.Query(r.Context(), `
@@ -3663,6 +4070,15 @@ func (s *Server) followUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid target", http.StatusBadRequest)
 		return
 	}
+	creatorBadge, err := s.userIsCreator(r.Context(), target)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !creatorBadge {
+		http.Error(w, "only creators can be followed", http.StatusBadRequest)
+		return
+	}
 	if _, err := s.db.Exec(r.Context(), `
 		INSERT INTO follows(follower_sub, followed_sub) VALUES($1,$2)
 		ON CONFLICT DO NOTHING
@@ -3670,6 +4086,7 @@ func (s *Server) followUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.createCreatorFollowNotification(r.Context(), target, claims.Subject, claims.Username)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "following"})
 }
 
@@ -3685,6 +4102,319 @@ func (s *Server) unfollowUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unfollowed"})
+}
+
+func (s *Server) meNotifications(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	rows, err := s.db.Query(r.Context(), `
+		SELECT n.id, n.kind, COALESCE(n.actor_sub,''), COALESCE(NULLIF(up.display_name,''), n.actor_sub), n.album_id, COALESCE(n.track_id::text,''), n.title, n.body, n.is_read, n.created_at::text
+		FROM notifications n
+		LEFT JOIN user_profiles up ON up.user_sub=n.actor_sub
+		WHERE n.user_sub=$1
+		ORDER BY n.created_at DESC
+		LIMIT 100
+	`, claims.Subject)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0, 64)
+	var unread int64
+	for rows.Next() {
+		var albumID sql.NullInt64
+		var id int64
+		var kind, actorSub, actorName, trackID, title, body, created string
+		var isRead bool
+		if err := rows.Scan(&id, &kind, &actorSub, &actorName, &albumID, &trackID, &title, &body, &isRead, &created); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !isRead {
+			unread++
+		}
+		item := map[string]any{
+			"id":         id,
+			"kind":       kind,
+			"actor_sub":  actorSub,
+			"actor_name": actorName,
+			"title":      title,
+			"body":       body,
+			"is_read":    isRead,
+			"created_at": created,
+		}
+		if albumID.Valid {
+			item["album_id"] = albumID.Int64
+		}
+		if strings.TrimSpace(trackID) != "" {
+			item["track_id"] = trackID
+		}
+		out = append(out, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": out, "unread": unread})
+}
+
+func (s *Server) meNotificationRead(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	notificationID, err := strconv.ParseInt(strings.TrimSpace(chi.URLParam(r, "notificationID")), 10, 64)
+	if err != nil || notificationID <= 0 {
+		http.Error(w, "invalid notification id", http.StatusBadRequest)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), `UPDATE notifications SET is_read=true WHERE id=$1 AND user_sub=$2`, notificationID, claims.Subject); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) meNotificationsReadAll(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), `UPDATE notifications SET is_read=true WHERE user_sub=$1 AND is_read=false`, claims.Subject); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) listFavorites(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	out, err := s.favoritePayload(r.Context(), claims.Subject, 200)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) addFavorite(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		Kind       string `json:"kind"`
+		TrackID    string `json:"track_id"`
+		AlbumID    int64  `json:"album_id"`
+		PlaylistID int64  `json:"playlist_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	kind := strings.TrimSpace(req.Kind)
+	switch kind {
+	case "track":
+		if strings.TrimSpace(req.TrackID) == "" {
+			http.Error(w, "track_id required", http.StatusBadRequest)
+			return
+		}
+		if _, err := s.db.Exec(r.Context(), `INSERT INTO favorites(user_sub,target_kind,track_id) VALUES($1,'track',$2) ON CONFLICT DO NOTHING`, claims.Subject, req.TrackID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "album":
+		if req.AlbumID <= 0 {
+			http.Error(w, "album_id required", http.StatusBadRequest)
+			return
+		}
+		if _, err := s.db.Exec(r.Context(), `INSERT INTO favorites(user_sub,target_kind,album_id) VALUES($1,'album',$2) ON CONFLICT DO NOTHING`, claims.Subject, req.AlbumID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "playlist":
+		if req.PlaylistID <= 0 {
+			http.Error(w, "playlist_id required", http.StatusBadRequest)
+			return
+		}
+		if _, err := s.db.Exec(r.Context(), `INSERT INTO favorites(user_sub,target_kind,playlist_id) VALUES($1,'playlist',$2) ON CONFLICT DO NOTHING`, claims.Subject, req.PlaylistID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	default:
+		http.Error(w, "invalid favorite kind", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{"status": "created"})
+}
+
+func (s *Server) removeFavorite(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	kind := strings.TrimSpace(chi.URLParam(r, "kind"))
+	targetID := strings.TrimSpace(chi.URLParam(r, "targetID"))
+	var err error
+	switch kind {
+	case "track":
+		_, err = s.db.Exec(r.Context(), `DELETE FROM favorites WHERE user_sub=$1 AND target_kind='track' AND track_id=$2`, claims.Subject, targetID)
+	case "album":
+		albumID, convErr := strconv.ParseInt(targetID, 10, 64)
+		if convErr != nil || albumID <= 0 {
+			http.Error(w, "invalid album id", http.StatusBadRequest)
+			return
+		}
+		_, err = s.db.Exec(r.Context(), `DELETE FROM favorites WHERE user_sub=$1 AND target_kind='album' AND album_id=$2`, claims.Subject, albumID)
+	case "playlist":
+		playlistID, convErr := strconv.ParseInt(targetID, 10, 64)
+		if convErr != nil || playlistID <= 0 {
+			http.Error(w, "invalid playlist id", http.StatusBadRequest)
+			return
+		}
+		_, err = s.db.Exec(r.Context(), `DELETE FROM favorites WHERE user_sub=$1 AND target_kind='playlist' AND playlist_id=$2`, claims.Subject, playlistID)
+	default:
+		http.Error(w, "invalid favorite kind", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) creatorHighscore(w http.ResponseWriter, r *http.Request) {
+	windowName, windowSQL := parseStatsWindow(r.URL.Query().Get("window"))
+	filterPlay := ``
+	filterListen := ``
+	filterRatings := ``
+	if windowSQL != "" {
+		filterPlay = ` AND p.played_at >= ` + windowSQL
+		filterListen = ` AND le.created_at >= ` + windowSQL
+		filterRatings = ` AND r.created_at >= ` + windowSQL
+	}
+	rows, err := s.db.Query(r.Context(), `
+		WITH creator_base AS (
+			SELECT up.user_sub, COALESCE(NULLIF(up.display_name,''), up.user_sub) AS display_name,
+			       COALESCE(up.status_line,'') AS status_line, COALESCE(up.accent_color,'#2d78dd') AS accent_color
+			FROM user_profiles up
+			WHERE COALESCE(up.creator_badge,false)=true
+			   OR EXISTS(SELECT 1 FROM tracks t WHERE t.owner_sub=up.user_sub)
+			   OR EXISTS(SELECT 1 FROM albums a WHERE a.owner_sub=up.user_sub)
+		)
+		SELECT
+			cb.user_sub,
+			cb.display_name,
+			cb.status_line,
+			cb.accent_color,
+			COALESCE(fc.followers,0)::bigint AS followers,
+			COALESCE(ps.plays,0)::bigint AS plays,
+			COALESCE(pa.playlist_adds,0)::bigint AS playlist_adds,
+			COALESCE(ul.unique_listeners,0)::bigint AS unique_listeners,
+			COALESCE(rep.replays,0)::bigint AS replays,
+			COALESCE(rr.avg_rating,0)::float8 AS rating,
+			COALESCE(lr.avg_listen_ratio,0)::float8 AS avg_listen_ratio,
+			(
+				COALESCE(ul.unique_listeners,0) * 2.0 +
+				COALESCE(pa.playlist_adds,0) * 2.5 +
+				COALESCE(lr.avg_listen_ratio,0) * 3.0 +
+				COALESCE(rep.replays,0) * 1.5 +
+				COALESCE(ps.plays,0) * 0.5 +
+				COALESCE(rr.avg_rating,0) * 1.0
+			)::float8 AS score
+		FROM creator_base cb
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS followers
+			FROM follows f
+			WHERE f.followed_sub=cb.user_sub
+		) fc ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS plays
+			FROM play_events p
+			JOIN tracks t ON t.id=p.track_id
+			WHERE t.owner_sub=cb.user_sub`+filterPlay+`
+		) ps ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(DISTINCT NULLIF(p.user_sub,''))::bigint AS unique_listeners
+			FROM play_events p
+			JOIN tracks t ON t.id=p.track_id
+			WHERE t.owner_sub=cb.user_sub`+filterPlay+`
+		) ul ON true
+		LEFT JOIN LATERAL (
+			SELECT GREATEST(COUNT(*)::bigint - COUNT(DISTINCT NULLIF(p.user_sub,''))::bigint, 0)::bigint AS replays
+			FROM play_events p
+			JOIN tracks t ON t.id=p.track_id
+			WHERE t.owner_sub=cb.user_sub`+filterPlay+`
+		) rep ON true
+		LEFT JOIN LATERAL (
+			SELECT COUNT(*)::bigint AS playlist_adds
+			FROM listening_events le
+			JOIN tracks t ON t.id=le.track_id
+			WHERE t.owner_sub=cb.user_sub AND le.event_type='playlist_add'`+filterListen+`
+		) pa ON true
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(AVG(r.rating),0)::float8 AS avg_rating
+			FROM ratings r
+			JOIN tracks t ON t.id=r.track_id
+			WHERE t.owner_sub=cb.user_sub`+filterRatings+`
+		) rr ON true
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(AVG(
+				CASE
+					WHEN le.event_type='play_complete' THEN 1.0
+					WHEN le.duration_seconds > 0 THEN LEAST(le.playback_seconds / le.duration_seconds, 1.0)
+					ELSE NULL
+				END
+			),0)::float8 AS avg_listen_ratio
+			FROM listening_events le
+			JOIN tracks t ON t.id=le.track_id
+			WHERE t.owner_sub=cb.user_sub AND le.event_type IN ('play_30s','play_50_percent','play_complete')`+filterListen+`
+		) lr ON true
+		ORDER BY score DESC, lower(cb.display_name)
+		LIMIT 100
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0, 64)
+	rank := 0
+	for rows.Next() {
+		rank++
+		var userSub, displayName, statusLine, accentColor string
+		var followers, plays, playlistAdds, uniqueListeners, replays int64
+		var rating, avgListenRatio, score float64
+		if err := rows.Scan(&userSub, &displayName, &statusLine, &accentColor, &followers, &plays, &playlistAdds, &uniqueListeners, &replays, &rating, &avgListenRatio, &score); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out = append(out, map[string]any{
+			"rank":             rank,
+			"user_sub":         userSub,
+			"display_name":     displayName,
+			"status_line":      statusLine,
+			"accent_color":     accentColor,
+			"followers":        followers,
+			"plays":            plays,
+			"playlist_adds":    playlistAdds,
+			"unique_listeners": uniqueListeners,
+			"replays":          replays,
+			"rating":           rating,
+			"avg_listen_ratio": avgListenRatio,
+			"score":            score,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"window": windowName, "creators": out})
 }
 
 func (s *Server) manageListTracks(w http.ResponseWriter, r *http.Request) {
@@ -4691,6 +5421,7 @@ func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Enabled      *bool    `json:"enabled"`
 		CreatorBadge *bool    `json:"creator_badge"`
+		DisplayName  *string  `json:"display_name"`
 		AddRoles     []string `json:"add_roles"`
 		RemoveRoles  []string `json:"remove_roles"`
 		SetRoles     []string `json:"set_roles"`
@@ -4720,6 +5451,27 @@ func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if req.CreatorBadge != nil {
 		if err := s.setUserCreatorBadge(r.Context(), userID, *req.CreatorBadge); err != nil {
 			http.Error(w, "set creator badge failed", http.StatusInternalServerError)
+			return
+		}
+	}
+	if req.DisplayName != nil {
+		displayName := strings.TrimSpace(*req.DisplayName)
+		if len(displayName) > 120 {
+			http.Error(w, "display_name too long", http.StatusBadRequest)
+			return
+		}
+		settings, err := s.userProfileSettingsBySub(r.Context(), userID)
+		if err != nil {
+			http.Error(w, "load profile settings failed", http.StatusInternalServerError)
+			return
+		}
+		creatorBadge, _ := s.userIsCreator(r.Context(), userID)
+		if err := s.upsertRichUserProfile(r.Context(), userID, displayName, settings.Bio, settings.StatusLine, settings.AccentColor, normalizedProfileRole(settings.ProfileRole, creatorBadge), settings.FeaturedAlbumIDs, settings.FeaturedPlaylistID, settings.GuestShowFollowers, settings.GuestShowPlaylists, settings.GuestShowFavorites, settings.GuestShowStats, settings.GuestShowUploads); err != nil {
+			if errors.Is(err, errProfileAliasTaken) {
+				http.Error(w, "display_name already in use", http.StatusConflict)
+				return
+			}
+			http.Error(w, "set display name failed", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -4827,6 +5579,7 @@ func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.writeAudit(r.Context(), claims.Subject, "admin.update_user", "user", userID, map[string]any{
 		"enabled":       req.Enabled,
+		"display_name":  req.DisplayName,
 		"add_roles":     req.AddRoles,
 		"remove_roles":  req.RemoveRoles,
 		"set_roles":     req.SetRoles,
@@ -5464,6 +6217,118 @@ func (s *Server) userProfileBySub(ctx context.Context, userSub string) (string, 
 	return displayName, bio, avatarPath, nil
 }
 
+func (s *Server) resolveUserSubjectByIdentifier(ctx context.Context, identifier string) (string, error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return "", pgx.ErrNoRows
+	}
+	var userSub string
+	err := s.db.QueryRow(ctx, `
+		SELECT user_sub
+		FROM (
+			SELECT user_sub, 0 AS ord, updated_at
+			FROM user_profiles
+			WHERE user_sub=$1
+			UNION ALL
+			SELECT user_sub, 1 AS ord, updated_at
+			FROM user_profiles
+			WHERE lower(display_name)=lower($1)
+			UNION ALL
+			SELECT user_sub, 2 AS ord, updated_at
+			FROM user_profile_aliases
+			WHERE alias_lookup=lower($1)
+		) candidates
+		ORDER BY ord, updated_at DESC
+		LIMIT 1
+	`, identifier).Scan(&userSub)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(userSub), nil
+}
+
+type profileSettings struct {
+	DisplayName          string
+	Bio                  string
+	AvatarPath           string
+	BannerPath           string
+	StatusLine           string
+	AccentColor          string
+	ProfileRole          string
+	FeaturedAlbumID      *int64
+	FeaturedAlbumIDs     []int64
+	FeaturedPlaylistID   *int64
+	DisplayNameChangedAt *time.Time
+	GuestShowFollowers   bool
+	GuestShowPlaylists   bool
+	GuestShowFavorites   bool
+	GuestShowStats       bool
+	GuestShowUploads     bool
+}
+
+func (s *Server) userProfileSettingsBySub(ctx context.Context, userSub string) (profileSettings, error) {
+	out := profileSettings{
+		AccentColor:        "#2d78dd",
+		ProfileRole:        "listener",
+		GuestShowFollowers: true,
+		GuestShowPlaylists: true,
+		GuestShowFavorites: false,
+		GuestShowStats:     true,
+		GuestShowUploads:   true,
+	}
+	err := s.db.QueryRow(ctx, `
+		SELECT
+			COALESCE(display_name,''),
+			COALESCE(bio,''),
+			COALESCE(avatar_path,''),
+			COALESCE(banner_path,''),
+			COALESCE(status_line,''),
+			COALESCE(accent_color,'#2d78dd'),
+			COALESCE(profile_role,'listener'),
+			featured_album_id,
+			COALESCE(featured_album_ids, '{}'::BIGINT[]),
+			featured_playlist_id,
+			display_name_changed_at,
+			COALESCE(guest_show_followers,true),
+			COALESCE(guest_show_playlists,true),
+			COALESCE(guest_show_favorites,false),
+			COALESCE(guest_show_stats,true),
+			COALESCE(guest_show_uploads,true)
+		FROM user_profiles
+		WHERE user_sub=$1
+	`, userSub).Scan(
+		&out.DisplayName,
+		&out.Bio,
+		&out.AvatarPath,
+		&out.BannerPath,
+		&out.StatusLine,
+		&out.AccentColor,
+		&out.ProfileRole,
+		&out.FeaturedAlbumID,
+		&out.FeaturedAlbumIDs,
+		&out.FeaturedPlaylistID,
+		&out.DisplayNameChangedAt,
+		&out.GuestShowFollowers,
+		&out.GuestShowPlaylists,
+		&out.GuestShowFavorites,
+		&out.GuestShowStats,
+		&out.GuestShowUploads,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return out, nil
+		}
+		return out, err
+	}
+	if strings.TrimSpace(out.ProfileRole) == "" {
+		out.ProfileRole = "listener"
+	}
+	if strings.TrimSpace(out.AccentColor) == "" {
+		out.AccentColor = "#2d78dd"
+	}
+	return out, nil
+}
+
 func (s *Server) upsertUserProfile(ctx context.Context, userSub, displayName, bio string) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO user_profiles(user_sub, display_name, bio, updated_at)
@@ -5474,6 +6339,374 @@ func (s *Server) upsertUserProfile(ctx context.Context, userSub, displayName, bi
 		    updated_at=now()
 	`, userSub, displayName, bio)
 	return err
+}
+
+func (s *Server) upsertRichUserProfile(ctx context.Context, userSub, displayName, bio, statusLine, accentColor, profileRole string, featuredAlbumIDs []int64, featuredPlaylistID *int64, guestShowFollowers, guestShowPlaylists, guestShowFavorites, guestShowStats, guestShowUploads bool) error {
+	displayName = strings.TrimSpace(displayName)
+	featuredAlbumIDs = normalizeFeaturedAlbumIDs(featuredAlbumIDs, nil)
+	var featuredAlbumID *int64
+	if len(featuredAlbumIDs) > 0 {
+		featuredAlbumID = &featuredAlbumIDs[0]
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var previousDisplayName string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(display_name,'') FROM user_profiles WHERE user_sub=$1`, userSub).Scan(&previousDisplayName); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if err := s.claimUserProfileAlias(ctx, tx, userSub, displayName, true); err != nil {
+		return err
+	}
+	if prev := strings.TrimSpace(previousDisplayName); prev != "" && !strings.EqualFold(prev, displayName) {
+		if err := s.claimUserProfileAlias(ctx, tx, userSub, prev, false); err != nil && !errors.Is(err, errProfileAliasTaken) {
+			return err
+		}
+	}
+	displayNameChanged := !strings.EqualFold(strings.TrimSpace(previousDisplayName), displayName)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO user_profiles(
+			user_sub, display_name, bio, status_line, accent_color, profile_role, featured_album_id, featured_album_ids, featured_playlist_id, display_name_changed_at,
+			guest_show_followers, guest_show_playlists, guest_show_favorites, guest_show_stats, guest_show_uploads, updated_at
+		)
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $10 THEN now() ELSE NULL END, $11, $12, $13, $14, $15, now())
+		ON CONFLICT (user_sub) DO UPDATE
+		SET display_name=EXCLUDED.display_name,
+		    bio=EXCLUDED.bio,
+		    status_line=EXCLUDED.status_line,
+		    accent_color=EXCLUDED.accent_color,
+		    profile_role=EXCLUDED.profile_role,
+		    featured_album_id=EXCLUDED.featured_album_id,
+		    featured_album_ids=EXCLUDED.featured_album_ids,
+		    featured_playlist_id=EXCLUDED.featured_playlist_id,
+		    display_name_changed_at = CASE
+		      WHEN lower(COALESCE(user_profiles.display_name,'')) IS DISTINCT FROM lower(COALESCE(EXCLUDED.display_name,'')) THEN now()
+		      ELSE user_profiles.display_name_changed_at
+		    END,
+		    guest_show_followers=EXCLUDED.guest_show_followers,
+		    guest_show_playlists=EXCLUDED.guest_show_playlists,
+		    guest_show_favorites=EXCLUDED.guest_show_favorites,
+		    guest_show_stats=EXCLUDED.guest_show_stats,
+		    guest_show_uploads=EXCLUDED.guest_show_uploads,
+		    updated_at=now()
+	`, userSub, displayName, bio, statusLine, accentColor, profileRole, featuredAlbumID, featuredAlbumIDs, featuredPlaylistID, displayNameChanged, guestShowFollowers, guestShowPlaylists, guestShowFavorites, guestShowStats, guestShowUploads)
+	if err != nil {
+		return err
+	}
+	if displayName != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE user_profile_aliases
+			SET is_primary = CASE WHEN alias_lookup = lower($2) THEN true ELSE false END,
+			    updated_at = now()
+			WHERE user_sub = $1
+		`, userSub, displayName); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) claimUserProfileAlias(ctx context.Context, tx pgx.Tx, userSub, alias string, isPrimary bool) error {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return nil
+	}
+	aliasLookup := strings.ToLower(alias)
+	var existingUserSub string
+	err := tx.QueryRow(ctx, `SELECT user_sub FROM user_profile_aliases WHERE alias_lookup=$1`, aliasLookup).Scan(&existingUserSub)
+	if err == nil && existingUserSub != userSub {
+		return errProfileAliasTaken
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO user_profile_aliases(user_sub, alias, alias_lookup, is_primary, created_at, updated_at)
+		VALUES($1, $2, $3, $4, now(), now())
+		ON CONFLICT (alias_lookup) DO UPDATE
+		SET user_sub = EXCLUDED.user_sub,
+		    alias = EXCLUDED.alias,
+		    is_primary = EXCLUDED.is_primary,
+		    updated_at = now()
+		WHERE user_profile_aliases.user_sub = EXCLUDED.user_sub
+	`, userSub, alias, aliasLookup, isPrimary)
+	return err
+}
+
+func normalizeFeaturedAlbumIDs(ids []int64, fallback *int64) []int64 {
+	seen := map[int64]bool{}
+	out := make([]int64, 0, 4)
+	appendID := func(v int64) {
+		if v <= 0 || seen[v] || len(out) >= 4 {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	for _, id := range ids {
+		appendID(id)
+	}
+	if len(out) == 0 && fallback != nil {
+		appendID(*fallback)
+	}
+	return out
+}
+
+func nextDisplayNameChangeTime(changedAt *time.Time) any {
+	if changedAt == nil {
+		return nil
+	}
+	return changedAt.Add(30 * 24 * time.Hour)
+}
+
+func userBannerURL(userSub, bannerPath string) string {
+	if strings.TrimSpace(userSub) == "" || strings.TrimSpace(bannerPath) == "" {
+		return ""
+	}
+	return fmt.Sprintf("/api/v1/users/%s/banner?v=%d", url.PathEscape(userSub), time.Now().Unix())
+}
+
+func (s *Server) enforceDisplayNameChangePolicy(ctx context.Context, userSub, nextDisplayName string, adminBypass bool) error {
+	if adminBypass {
+		return nil
+	}
+	nextDisplayName = strings.TrimSpace(nextDisplayName)
+	var currentDisplayName string
+	var changedAt *time.Time
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(display_name,''), display_name_changed_at
+		FROM user_profiles
+		WHERE user_sub=$1
+	`, userSub).Scan(&currentDisplayName, &changedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(currentDisplayName), nextDisplayName) {
+		return nil
+	}
+	if changedAt == nil {
+		return nil
+	}
+	if time.Since(*changedAt) < 30*24*time.Hour {
+		return errDisplayNameChangeCooldown
+	}
+	return nil
+}
+
+func normalizedAccentColor(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "#2d78dd"
+	}
+	if len(raw) == 7 && strings.HasPrefix(raw, "#") {
+		for _, ch := range raw[1:] {
+			if !strings.ContainsRune("0123456789abcdefABCDEF", ch) {
+				return "#2d78dd"
+			}
+		}
+		return strings.ToLower(raw)
+	}
+	return "#2d78dd"
+}
+
+func normalizedProfileRole(raw string, creator bool) string {
+	if creator {
+		return "creator"
+	}
+	return "listener"
+}
+
+func (s *Server) userHasUploads(ctx context.Context, userSub string) (bool, error) {
+	var hasUploads bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM tracks WHERE owner_sub=$1
+			UNION ALL
+			SELECT 1 FROM albums WHERE owner_sub=$1
+		)
+	`, userSub).Scan(&hasUploads)
+	if err != nil {
+		return false, err
+	}
+	return hasUploads, nil
+}
+
+func (s *Server) userIsCreator(ctx context.Context, userSub string) (bool, error) {
+	creatorBadge, err := s.userCreatorBadge(ctx, userSub)
+	if err != nil {
+		return false, err
+	}
+	if creatorBadge {
+		return true, nil
+	}
+	return s.userHasUploads(ctx, userSub)
+}
+
+func (s *Server) favoritePayload(ctx context.Context, userSub string, limit int) (map[string]any, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	out := map[string]any{
+		"tracks":    []map[string]any{},
+		"albums":    []map[string]any{},
+		"playlists": []map[string]any{},
+	}
+	trackRows, err := s.db.Query(ctx, `
+		SELECT t.id::text, t.title, COALESCE(ar.name,''), COALESCE(al.title,''), f.created_at::text
+		FROM favorites f
+		JOIN tracks t ON t.id=f.track_id
+		LEFT JOIN artists ar ON ar.id=t.artist_id
+		LEFT JOIN albums al ON al.id=t.album_id
+		WHERE f.user_sub=$1 AND f.target_kind='track'
+		ORDER BY f.created_at DESC
+		LIMIT $2
+	`, userSub, limit)
+	if err != nil {
+		return out, err
+	}
+	defer trackRows.Close()
+	tracks := make([]map[string]any, 0, limit)
+	for trackRows.Next() {
+		var id, title, artist, album, created string
+		if err := trackRows.Scan(&id, &title, &artist, &album, &created); err != nil {
+			return out, err
+		}
+		tracks = append(tracks, map[string]any{"id": id, "title": title, "artist": artist, "album": album, "created_at": created})
+	}
+	out["tracks"] = tracks
+
+	albumRows, err := s.db.Query(ctx, `
+		SELECT a.id, a.title, COALESCE(ar.name,''), COALESCE(a.genre,''), f.created_at::text
+		FROM favorites f
+		JOIN albums a ON a.id=f.album_id
+		LEFT JOIN artists ar ON ar.id=a.artist_id
+		WHERE f.user_sub=$1 AND f.target_kind='album'
+		ORDER BY f.created_at DESC
+		LIMIT $2
+	`, userSub, limit)
+	if err != nil {
+		return out, err
+	}
+	defer albumRows.Close()
+	albums := make([]map[string]any, 0, limit)
+	for albumRows.Next() {
+		var id int64
+		var title, artist, genre, created string
+		if err := albumRows.Scan(&id, &title, &artist, &genre, &created); err != nil {
+			return out, err
+		}
+		albums = append(albums, map[string]any{"id": id, "title": title, "artist": artist, "genre": genre, "created_at": created})
+	}
+	out["albums"] = albums
+
+	playlistRows, err := s.db.Query(ctx, `
+		SELECT p.id, p.name, p.visibility, f.created_at::text
+		FROM favorites f
+		JOIN playlists p ON p.id=f.playlist_id
+		WHERE f.user_sub=$1 AND f.target_kind='playlist'
+		ORDER BY f.created_at DESC
+		LIMIT $2
+	`, userSub, limit)
+	if err != nil {
+		return out, err
+	}
+	defer playlistRows.Close()
+	playlists := make([]map[string]any, 0, limit)
+	for playlistRows.Next() {
+		var id int64
+		var name, visibility, created string
+		if err := playlistRows.Scan(&id, &name, &visibility, &created); err != nil {
+			return out, err
+		}
+		playlists = append(playlists, map[string]any{"id": id, "name": name, "visibility": visibility, "created_at": created})
+	}
+	out["playlists"] = playlists
+	return out, nil
+}
+
+func notificationSnippet(raw string, limit int) string {
+	raw = strings.TrimSpace(raw)
+	if limit <= 0 || len(raw) <= limit {
+		return raw
+	}
+	if limit <= 3 {
+		return raw[:limit]
+	}
+	return strings.TrimSpace(raw[:limit-3]) + "..."
+}
+
+func (s *Server) displayNameForNotification(ctx context.Context, userSub, fallback string) string {
+	displayName, _, _, err := s.userProfileBySub(ctx, userSub)
+	if err == nil && strings.TrimSpace(displayName) != "" {
+		return strings.TrimSpace(displayName)
+	}
+	fallback = strings.TrimSpace(fallback)
+	if fallback != "" {
+		return fallback
+	}
+	return strings.TrimSpace(userSub)
+}
+
+func (s *Server) createCreatorFollowNotification(ctx context.Context, creatorSub, followerSub, followerName string) {
+	if strings.TrimSpace(creatorSub) == "" || strings.TrimSpace(followerSub) == "" || creatorSub == followerSub {
+		return
+	}
+	isCreator, err := s.userIsCreator(ctx, creatorSub)
+	if err != nil || !isCreator {
+		return
+	}
+	name := s.displayNameForNotification(ctx, followerSub, followerName)
+	_, _ = s.db.Exec(ctx, `
+		INSERT INTO notifications(user_sub, actor_sub, kind, title, body, is_read, created_at)
+		VALUES($1, $2, 'creator_follow', 'New follower', $3, false, now())
+	`, creatorSub, followerSub, fmt.Sprintf("%s started following your creator profile.", name))
+}
+
+func (s *Server) createCreatorCommentNotification(ctx context.Context, creatorSub, actorSub, actorName, kind, title, body string, trackID *string) {
+	if strings.TrimSpace(creatorSub) == "" || strings.TrimSpace(actorSub) == "" || creatorSub == actorSub {
+		return
+	}
+	isCreator, err := s.userIsCreator(ctx, creatorSub)
+	if err != nil || !isCreator {
+		return
+	}
+	name := s.displayNameForNotification(ctx, actorSub, actorName)
+	tid := ""
+	if trackID != nil && strings.TrimSpace(*trackID) != "" {
+		tid = strings.TrimSpace(*trackID)
+	}
+	_, _ = s.db.Exec(ctx, `
+		INSERT INTO notifications(user_sub, actor_sub, kind, track_id, title, body, is_read, created_at)
+		VALUES($1, $2, $3, NULLIF($4,'')::uuid, $5, $6, false, now())
+	`, creatorSub, actorSub, strings.TrimSpace(kind), tid, strings.TrimSpace(title), fmt.Sprintf("%s %s", name, strings.TrimSpace(body)))
+}
+
+func (s *Server) createFollowerReleaseNotifications(ctx context.Context, creatorSub string, albumID int64, trackID, trackTitle string) {
+	if creatorSub == "" || albumID <= 0 {
+		return
+	}
+	var albumTitle string
+	_ = s.db.QueryRow(ctx, `SELECT COALESCE(title,'') FROM albums WHERE id=$1`, albumID).Scan(&albumTitle)
+	if strings.TrimSpace(albumTitle) == "" {
+		albumTitle = trackTitle
+	}
+	_, _ = s.db.Exec(ctx, `
+		INSERT INTO notifications(user_sub, actor_sub, kind, album_id, track_id, title, body)
+		SELECT f.follower_sub, $1, 'creator_release', $2, NULLIF($3,'')::uuid, $4, $5
+		FROM follows f
+		WHERE f.followed_sub=$1
+		ON CONFLICT (user_sub, kind, actor_sub, album_id) DO UPDATE
+		SET title=EXCLUDED.title, body=EXCLUDED.body, is_read=false, created_at=now()
+	`, creatorSub, albumID, trackID, "New release", fmt.Sprintf("A followed creator uploaded new music in %s.", albumTitle))
 }
 
 func (s *Server) userHasSubsonicPassword(ctx context.Context, userSub string) (bool, error) {
@@ -5661,6 +6894,53 @@ func (s *Server) saveUserAvatarFromRequest(ctx context.Context, r *http.Request,
 		VALUES($1, $2, now())
 		ON CONFLICT (user_sub) DO UPDATE
 		SET avatar_path=EXCLUDED.avatar_path, updated_at=now()
+	`, userSub, target)
+	if err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+func (s *Server) saveUserBannerFromRequest(ctx context.Context, r *http.Request, userSub string) (string, error) {
+	if err := r.ParseMultipartForm(12 * 1024 * 1024); err != nil {
+		return "", fmt.Errorf("invalid multipart payload")
+	}
+	f, h, err := r.FormFile("banner")
+	if err != nil {
+		return "", fmt.Errorf("missing banner file")
+	}
+	defer f.Close()
+
+	ext := strings.ToLower(filepath.Ext(h.Filename))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp":
+	default:
+		return "", fmt.Errorf("banner must be jpg/png/webp")
+	}
+	target := s.store.UserBannerPathWithExt(userSub, strings.TrimPrefix(ext, "."))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(s.store.TempDir(), "banner-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := io.Copy(tmp, io.LimitReader(f, 12*1024*1024)); err != nil {
+		_ = tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp.Name(), target); err != nil {
+		return "", err
+	}
+	_, err = s.db.Exec(ctx, `
+		INSERT INTO user_profiles(user_sub, banner_path, updated_at)
+		VALUES($1, $2, now())
+		ON CONFLICT (user_sub) DO UPDATE
+		SET banner_path=EXCLUDED.banner_path, updated_at=now()
 	`, userSub, target)
 	if err != nil {
 		return "", err

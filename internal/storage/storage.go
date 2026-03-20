@@ -18,6 +18,7 @@ func New(root string) (*Store, error) {
 		s.DerivedDir(),
 		s.CoversDir(),
 		s.UserAvatarsDir(),
+		s.UserBannersDir(),
 		s.TempDir(),
 	} {
 		if err := os.MkdirAll(p, 0o755); err != nil {
@@ -33,7 +34,10 @@ func (s *Store) CoversDir() string    { return filepath.Join(s.Root, "covers") }
 func (s *Store) UserAvatarsDir() string {
 	return filepath.Join(s.Root, "users")
 }
-func (s *Store) TempDir() string      { return filepath.Join(s.Root, "temp") }
+func (s *Store) UserBannersDir() string {
+	return filepath.Join(s.Root, "user-banners")
+}
+func (s *Store) TempDir() string { return filepath.Join(s.Root, "temp") }
 
 func (s *Store) OriginalsPath(hash, ext string) string {
 	h := strings.ToLower(hash)
@@ -73,4 +77,16 @@ func (s *Store) UserAvatarPathWithExt(userSub, ext string) string {
 		safeSub = "unknown"
 	}
 	return filepath.Join(s.UserAvatarsDir(), fmt.Sprintf("avatar-%s.%s", safeSub, cleanExt))
+}
+
+func (s *Store) UserBannerPathWithExt(userSub, ext string) string {
+	cleanExt := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(ext)), ".")
+	if cleanExt == "" {
+		cleanExt = "jpg"
+	}
+	safeSub := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(strings.TrimSpace(userSub))
+	if safeSub == "" {
+		safeSub = "unknown"
+	}
+	return filepath.Join(s.UserBannersDir(), fmt.Sprintf("banner-%s.%s", safeSub, cleanExt))
 }
