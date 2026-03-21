@@ -565,6 +565,8 @@ const syncPublicUI = (...args) => ns.syncPublicUI(...args);
       if (sRes.ok) {
         const sj = await sRes.json();
         state.publicSettings.registration_enabled = !!sj.registration_enabled;
+        $('adminJukeboxTrackLimit').value = String(Number(sj.jukebox_max_track_plays_per_hour || 1));
+        $('adminJukeboxCreatorLimit').value = String(Number(sj.jukebox_max_creator_tracks_per_hour || 12));
       }
       syncPublicUI();
       $('registrationState').textContent = `Registration: ${state.publicSettings.registration_enabled ? 'enabled' : 'disabled'}`;
@@ -658,6 +660,25 @@ const syncPublicUI = (...args) => ns.syncPublicUI(...args);
         return;
       }
       await loadPublicSettings();
+      await loadAdminSystemOverview();
+    }
+
+    async function saveAdminJukeboxSettings() {
+      if (!canAdmin()) return;
+      const trackLimit = Number($('adminJukeboxTrackLimit').value || '1');
+      const creatorLimit = Number($('adminJukeboxCreatorLimit').value || '12');
+      const res = await apiFetch('/api/v1/admin/settings', {
+        method: 'PATCH',
+        headers: headers({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          jukebox_max_track_plays_per_hour: trackLimit,
+          jukebox_max_creator_tracks_per_hour: creatorLimit
+        })
+      });
+      if (!res.ok) {
+        alert(`Jukebox settings update failed (${res.status}).`);
+        return;
+      }
       await loadAdminSystemOverview();
     }
 
@@ -905,6 +926,7 @@ Object.assign(window.HexSonic, {
       loadAdminDebugToggle,
       saveAdminDebugToggle,
       toggleRegistrationSetting,
+      saveAdminJukeboxSettings,
       loadJobs,
       adminSetVisibility,
       adminDeleteTrack,

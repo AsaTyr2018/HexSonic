@@ -30,6 +30,7 @@
       <div class="nav-group">
         <div class="nav-title">Library</div>
         <button class="nav-item active" data-view="discovery">Discovery</button>
+        <button class="nav-item hidden" id="navJukebox" data-view="jukebox">Jukebox</button>
         <button class="nav-item" data-view="creators">Creators</button>
         <button class="nav-item" data-view="albums">Albums</button>
         <button class="nav-item" data-view="tracks">Songs</button>
@@ -93,6 +94,78 @@
         <div class="discovery-layout">
           <div id="discoverySummary" class="discovery-note">Discovery is loading...</div>
           <div id="discoveryGrid" class="discovery-grid"></div>
+        </div>
+      </section>
+
+      <section id="viewJukebox" class="pane hidden">
+        <div class="jukebox-layout">
+          <div class="jukebox-hero">
+            <div>
+              <div class="panel-title">Virtual DJ / Jukebox</div>
+              <div id="jukeboxSummary" class="muted">Adaptive radio for logged-in listeners. Public tracks only.</div>
+            </div>
+            <div class="jukebox-modebar">
+              <button class="btn slim active" data-jukebox-mode="for_you">For You</button>
+              <button class="btn slim" data-jukebox-mode="genre">Genre Radio</button>
+              <button class="btn slim" data-jukebox-mode="creator">Creator Radio</button>
+              <button class="btn slim" data-jukebox-mode="album">Album Radio</button>
+              <button class="btn slim" data-jukebox-mode="try_me">Try me!</button>
+            </div>
+          </div>
+          <div class="jukebox-grid">
+            <div class="panel jukebox-control-panel">
+              <div class="jukebox-console">
+                <div class="jukebox-console-head">
+                  <div class="panel-title">Control Deck</div>
+                  <span class="pill ok">Full Auto</span>
+                </div>
+                <div class="jukebox-dial-row">
+                  <div class="jukebox-dial">
+                    <div class="jukebox-dial-label">Mode</div>
+                    <div id="jukeboxModeLabel" class="jukebox-dial-value">For You</div>
+                  </div>
+                  <div class="jukebox-dial">
+                    <div class="jukebox-dial-label">Lane</div>
+                    <div id="jukeboxLaneLabel" class="jukebox-dial-value">Profile driven</div>
+                  </div>
+                </div>
+                <div id="jukeboxSessionMeta" class="jukebox-session-note">No active session.</div>
+                <div class="jukebox-actions jukebox-primary-actions">
+                  <button class="btn primary" id="btnJukeboxStart">Start session</button>
+                  <button class="btn" id="btnJukeboxRefresh">Refresh queue</button>
+                </div>
+                <div class="jukebox-feedback-grid">
+                  <button class="btn slim" id="btnJukeboxMoreLike">More like this</button>
+                  <button class="btn slim" id="btnJukeboxLessLike">Less like this</button>
+                  <button class="btn slim" id="btnJukeboxStayGenre">Stay in genre</button>
+                  <button class="btn slim" id="btnJukeboxSurprise">Surprise me</button>
+                </div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">Now On Air</div>
+              <div id="jukeboxNowPlaying" class="jukebox-now-card">
+                <div class="muted">Start a session to begin.</div>
+              </div>
+              <div class="panel-title" style="margin-top:12px;">Up Next</div>
+              <div id="jukeboxQueueMeta" class="muted">Start a session to build your Jukebox queue.</div>
+              <div class="table-wrap" style="margin-top:10px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width:48px">#</th>
+                      <th>Track</th>
+                      <th style="width:170px">Album</th>
+                      <th style="width:130px">Genre</th>
+                      <th style="width:90px">Score</th>
+                      <th style="width:170px">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody id="jukeboxQueueBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -317,6 +390,7 @@
               <button class="profile-tabbtn active" data-profile-tab-btn="identity">Identity</button>
               <button class="profile-tabbtn" data-profile-tab-btn="media">Media</button>
               <button class="profile-tabbtn" data-profile-tab-btn="privacy">Privacy</button>
+              <button class="profile-tabbtn" data-profile-tab-btn="jukebox">Jukebox</button>
               <button class="profile-tabbtn" data-profile-tab-btn="creator">Creator</button>
               <button class="profile-tabbtn" data-profile-tab-btn="security">Security</button>
             </div>
@@ -395,6 +469,45 @@
                 <label class="profile-toggle"><input id="profileGuestShowFavorites" type="checkbox" /><span><b>Favorites</b><span class="muted">Let guests see liked albums, tracks and playlists.</span></span></label>
                 <label class="profile-toggle"><input id="profileGuestShowStats" type="checkbox" checked /><span><b>Stats</b><span class="muted">Show upload counters and visible activity numbers.</span></span></label>
                 <label class="profile-toggle"><input id="profileGuestShowUploads" type="checkbox" checked /><span><b>Uploads</b><span class="muted">Show your public albums and their entry point to tracks.</span></span></label>
+              </div>
+            </div>
+
+            <div class="profile-section profile-tabpanel hidden" data-profile-tab="jukebox">
+              <div class="profile-section-head">
+                <div>
+                  <div class="profile-section-title">Jukebox Settings</div>
+                  <div class="profile-section-subtitle">Preferred genres, active tuning and vote history shape your personal radio lane.</div>
+                </div>
+              </div>
+              <div class="profile-field">
+                <label for="profileJukeboxGenres">Preferred genres</label>
+                <input id="profileJukeboxGenres" placeholder="Example: Viking Rock, Gothic Metal, Industrial Electronic" />
+                <div class="muted">Comma-separated. These boost your For You and Try Me sessions.</div>
+              </div>
+              <div class="profile-grid-2">
+                <div class="panel">
+                  <div class="service-head">
+                    <b>Active Tuning</b>
+                    <button class="btn slim" id="btnProfileJukeboxReset">Reset tuning</button>
+                  </div>
+                  <div id="profileJukeboxTuning" class="muted" style="margin-top:8px;">No active tuning yet.</div>
+                </div>
+                <div class="panel">
+                  <div class="service-head"><b>Vote History</b><span class="pill">Recent</span></div>
+                  <div class="table-wrap" style="margin-top:8px;">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th style="width:110px;">Action</th>
+                          <th>Track</th>
+                          <th style="width:140px;">Genre</th>
+                          <th style="width:160px;">Time</th>
+                        </tr>
+                      </thead>
+                      <tbody id="profileJukeboxHistoryBody"></tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -727,6 +840,19 @@
               <button class="btn" id="btnToggleRegistration">Toggle Registration</button>
               <a id="btnOpenKeycloak" class="btn hidden" href="#" target="_blank" rel="noopener">Open Keycloak</a>
             </div>
+            <div class="admin-controls" style="margin-top:10px; grid-template-columns: repeat(3, minmax(0, 1fr));">
+              <div class="profile-field">
+                <label for="adminJukeboxTrackLimit">Jukebox: same song / hour</label>
+                <input id="adminJukeboxTrackLimit" type="number" min="1" max="24" />
+              </div>
+              <div class="profile-field">
+                <label for="adminJukeboxCreatorLimit">Jukebox: creator tracks / hour</label>
+                <input id="adminJukeboxCreatorLimit" type="number" min="1" max="240" />
+              </div>
+              <div class="profile-field" style="align-content:end;">
+                <button class="btn" id="btnSaveJukeboxSettings">Save Jukebox Settings</button>
+              </div>
+            </div>
           </div>
           <div class="panel">
             <div class="panel-title">System Overview</div>
@@ -987,6 +1113,7 @@
       </div>
     </div>
     <audio id="audio"></audio>
+    <audio id="audioB"></audio>
   </footer>
 
   <section id="popoutPlayer" class="popout-player hidden">
@@ -1070,6 +1197,7 @@
     <script src="/assets/views/library.js"></script>
     <script src="/assets/views/admin.js"></script>
     <script src="/assets/views/discovery.js"></script>
+    <script src="/assets/views/jukebox.js"></script>
     <script src="/assets/app.js"></script>
 
 </body>

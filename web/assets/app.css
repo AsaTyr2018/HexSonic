@@ -261,6 +261,88 @@
       color: #d8e6f6;
       font-weight: 600;
     }
+    .jukebox-now-card {
+      margin-top: 10px;
+      padding: 12px;
+      border: 1px solid #4b5464;
+      border-radius: 10px;
+      background:
+        linear-gradient(180deg, rgba(59, 65, 76, 0.96), rgba(44, 48, 56, 0.98));
+      display: grid;
+      gap: 8px;
+      min-height: 126px;
+      align-content: start;
+    }
+    .jukebox-now-kicker {
+      font-size: 11px;
+      color: #9cb2cb;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .jukebox-now-title {
+      font-size: 20px;
+      line-height: 1.18;
+      font-weight: 700;
+      color: #f1f6fd;
+    }
+    .jukebox-now-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .jukebox-now-progress {
+      display: grid;
+      gap: 5px;
+      margin-top: 2px;
+    }
+    .jukebox-now-progressbar {
+      width: 100%;
+      height: 6px;
+      border-radius: 999px;
+      background: #252a31;
+      overflow: hidden;
+      border: 1px solid #3f4754;
+    }
+    .jukebox-now-progressfill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #5f96ea, #7bc0ff);
+      transition: width 0.15s linear;
+    }
+    .jukebox-now-progressmeta {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .jukebox-reason-chip {
+      appearance: none;
+      border: 1px solid #4c5566;
+      background: #323841;
+      color: #d7e5f8;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      cursor: pointer;
+      text-align: left;
+      text-decoration: none;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .jukebox-reason-chip:hover {
+      background: #3c4652;
+      border-color: #61708a;
+    }
+    .jukebox-upnext-empty {
+      padding: 10px 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .album-meta-tag {
       display: inline-flex;
       align-items: center;
@@ -1509,6 +1591,115 @@
       min-width: 0;
       font-size: 11px;
     }
+    .jukebox-layout {
+      display: grid;
+      gap: 12px;
+      padding: 12px;
+    }
+    .jukebox-hero {
+      display: grid;
+      gap: 10px;
+      border: 1px solid #394456;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #1b2230, #141a23);
+      padding: 14px;
+    }
+    .jukebox-modebar,
+    .jukebox-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .jukebox-grid {
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .jukebox-control-panel {
+      overflow: hidden;
+    }
+    .jukebox-console {
+      display: grid;
+      gap: 14px;
+      padding: 4px 2px 2px;
+    }
+    .jukebox-console-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .jukebox-dial-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .jukebox-dial {
+      border: 1px solid #3c4452;
+      border-radius: 14px;
+      background:
+        radial-gradient(circle at top, rgba(116, 188, 255, 0.18), transparent 48%),
+        linear-gradient(180deg, #1a1f27, #12161d);
+      min-height: 108px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 14px 10px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .jukebox-dial-label {
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #8fa6c1;
+      margin-bottom: 8px;
+    }
+    .jukebox-dial-value {
+      font-size: 18px;
+      font-weight: 700;
+      color: #f4f8ff;
+    }
+    .jukebox-session-note {
+      border: 1px solid #2e3d54;
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: rgba(27, 45, 72, 0.25);
+      color: #c5d3e8;
+      font-size: 13px;
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+    }
+    .jukebox-primary-actions .btn {
+      min-width: 132px;
+    }
+    .jukebox-feedback-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .jukebox-row-active td {
+      background: rgba(46, 98, 160, 0.22);
+      color: #eef5ff;
+    }
+    .jukebox-reason-btn {
+      background: none;
+      border: 0;
+      padding: 0;
+      margin: 0;
+      color: #c7d3e5;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .jukebox-reason-btn:hover,
+    .jukebox-reason-btn:focus-visible {
+      color: #f4f8ff;
+      text-decoration: underline;
+      outline: none;
+    }
     .creator-stats-layout {
       display: grid;
       gap: 12px;
@@ -1869,6 +2060,10 @@
       .admin-metrics-grid { grid-template-columns: 1fr 1fr; }
       .service-grid { grid-template-columns: 1fr; }
       .discovery-grid { grid-template-columns: 1fr; }
+      .jukebox-grid { grid-template-columns: 1fr; }
+      .jukebox-dial-row,
+      .jukebox-feedback-grid { grid-template-columns: 1fr; }
+      .jukebox-grid { grid-template-columns: 1fr; }
       .upload-grid { grid-template-columns: 1fr; }
       .playlist-layout { grid-template-columns: 1fr; }
       .playlist-create { grid-template-columns: 1fr; }

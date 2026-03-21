@@ -80,6 +80,8 @@
       applyEQPreset,
       signStream,
       startTrackById,
+      activeAudio,
+      maybeScheduleJukeboxCrossfade,
       playAlbum,
       insertQueueAfterCurrent,
       appendToQueue,
@@ -105,6 +107,7 @@
       setFavoritesTab,
       renderFavorites,
       saveMyProfile,
+      resetMyJukeboxProfile,
       uploadMyAvatar,
       uploadMyBanner,
       updateMyPassword,
@@ -122,6 +125,14 @@
       loadDiscovery,
       renderCreatorStats,
       loadCreatorStats,
+      syncJukeboxModeControls,
+      renderJukeboxNowPlaying,
+      renderJukeboxQueue,
+      startJukeboxSession,
+      refreshJukeboxQueue,
+      sendJukeboxFeedback,
+      handleJukeboxAdvance,
+      renderJukebox,
       canCreatePlaylists,
       setPlaylistDockOpen,
       ownPlaylists,
@@ -201,6 +212,7 @@
       loadAdminDebugToggle,
       saveAdminDebugToggle,
       toggleRegistrationSetting,
+      saveAdminJukeboxSettings,
       loadJobs,
       adminSetVisibility,
       adminDeleteTrack,
@@ -223,6 +235,7 @@
       $('navGroupCreator').classList.toggle('hidden', !creatorNavVisible);
       $('navGroupAdmin').classList.toggle('hidden', !adminNavVisible);
       $('navPlaylists').classList.toggle('hidden', !loggedIn);
+      $('navJukebox').classList.toggle('hidden', !loggedIn);
       $('navFavorites').classList.toggle('hidden', !loggedIn);
       $('navProfile').classList.toggle('hidden', !loggedIn);
       $('navAdminUsers').classList.toggle('hidden', !adminNavVisible);
@@ -248,6 +261,9 @@
       }
       if (!loggedIn && !$('viewPlaylists').classList.contains('hidden')) {
         switchView('albums');
+      }
+      if (!loggedIn && !$('viewJukebox').classList.contains('hidden')) {
+        switchView('discovery');
       }
       if (!loggedIn && !$('viewFavorites').classList.contains('hidden')) {
         switchView('albums');
@@ -688,6 +704,9 @@
         await apiFetch('/api/v1/me/notifications/read-all', { method: 'POST', headers: headers() });
         await loadNotifications();
       };
+      if ($('btnProfileJukeboxReset')) {
+        $('btnProfileJukeboxReset').onclick = resetMyJukeboxProfile;
+      }
 
       $('loginPass').addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
@@ -758,6 +777,7 @@
       $('btnAdminSystemRefresh').onclick = loadAdminSystemOverview;
       $('btnAdminLogsRefresh').onclick = loadAdminAuditLogs;
       $('btnAdminDebugSave').onclick = saveAdminDebugToggle;
+      $('btnSaveJukeboxSettings').onclick = saveAdminJukeboxSettings;
       $('adminLogSource').onchange = loadAdminAuditLogs;
       $('btnToggleRegistration').onclick = toggleRegistrationSetting;
       $('btnProfileSave').onclick = saveMyProfile;
@@ -769,7 +789,7 @@
       document.querySelectorAll('[data-profile-tab-btn]').forEach((el) => {
         el.onclick = () => switchProfileTab(el.getAttribute('data-profile-tab-btn'));
       });
-      ['profileDisplayName','profileStatusLine','profileBio','profileAccentColor','profileFeaturedAlbum1','profileFeaturedAlbum2','profileFeaturedAlbum3','profileFeaturedAlbum4','profileGuestShowFollowers','profileGuestShowPlaylists','profileGuestShowFavorites','profileGuestShowStats','profileGuestShowUploads'].forEach((id) => {
+      ['profileDisplayName','profileStatusLine','profileBio','profileAccentColor','profileFeaturedAlbum1','profileFeaturedAlbum2','profileFeaturedAlbum3','profileFeaturedAlbum4','profileFeaturedPlaylist','profileJukeboxGenres','profileGuestShowFollowers','profileGuestShowPlaylists','profileGuestShowFavorites','profileGuestShowStats','profileGuestShowUploads'].forEach((id) => {
         const el = $(id);
         if (!el) return;
         const evt = el.tagName === 'SELECT' || el.type === 'checkbox' ? 'change' : 'input';
@@ -787,6 +807,21 @@
       $('creatorStatsWindow').onchange = loadCreatorStats;
       $('btnCreatorHighscoreRefresh').onclick = loadCreatorHighscore;
       $('creatorHighscoreWindow').onchange = loadCreatorHighscore;
+      document.querySelectorAll('[data-jukebox-mode]').forEach((btn) => {
+        btn.onclick = async () => {
+          state.jukebox.mode = btn.getAttribute('data-jukebox-mode') || 'for_you';
+          syncJukeboxModeControls();
+          if (state.me) {
+            await startJukeboxSession();
+          }
+        };
+      });
+      $('btnJukeboxStart').onclick = startJukeboxSession;
+      $('btnJukeboxRefresh').onclick = refreshJukeboxQueue;
+      $('btnJukeboxMoreLike').onclick = () => sendJukeboxFeedback('more_like_this');
+      $('btnJukeboxLessLike').onclick = () => sendJukeboxFeedback('less_like_this');
+      $('btnJukeboxStayGenre').onclick = () => sendJukeboxFeedback('stay_in_genre');
+      $('btnJukeboxSurprise').onclick = () => sendJukeboxFeedback('surprise_me');
       $('adminUserSearch').addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
@@ -917,42 +952,55 @@
         applyPlayerControl('seek', Number(e.target.value) / 1000);
       };
 
-      const audio = $('audio');
+      const bindAudioElement = (audio) => {
       audio.volume = 0.7;
       updatePlayerButtons();
       applyEQPreset($('eqPreset').value);
       audio.onloadedmetadata = () => {
+        if (audio !== activeAudio()) return;
         $('durationLabel').textContent = fmt(audio.duration || 0);
         emitPlayerState(true);
       };
       audio.ontimeupdate = () => {
+        if (audio !== activeAudio()) return;
         const p = audio.duration ? (audio.currentTime / audio.duration) : 0;
         $('seekRange').value = Math.round(p * 1000);
         $('elapsedLabel').textContent = fmt(audio.currentTime);
         $('durationLabel').textContent = fmt(audio.duration || 0);
         updateListeningSession(audio.currentTime, audio.duration || 0);
+        maybeScheduleJukeboxCrossfade();
+        if (state.currentView === 'jukebox' && typeof renderJukeboxNowPlaying === 'function') {
+          renderJukeboxNowPlaying();
+        }
         emitPlayerState(false);
       };
       audio.onended = async () => {
+        if (audio !== activeAudio()) return;
+        if (state.playerDeck && state.playerDeck.crossfading) return;
         if (!state.queue.length) return;
         finalizeListeningSession('natural_end');
+        if (await handleJukeboxAdvance()) return;
         state.queueIndex = (state.queueIndex + 1) % state.queue.length;
         await startTrackById(state.queue[state.queueIndex].id, state.queue);
       };
       audio.onpause = () => {
+        if (audio !== activeAudio()) return;
         updatePlayerButtons();
         emitPlayerState(true);
       };
       audio.onplay = () => {
+        if (audio !== activeAudio()) return;
         updatePlayerButtons();
         emitPlayerState(true);
       };
       audio.onvolumechange = () => {
+        if (audio !== activeAudio()) return;
         $('volumeRange').value = String(Math.round((audio.volume || 0) * 100));
         updatePlayerButtons();
         emitPlayerState(false);
       };
       audio.onseeked = () => {
+        if (audio !== activeAudio()) return;
         const s = state.listeningSession;
         if (s && s.track_id) {
           sendListeningEvent('seek', s.track_id, {
@@ -964,6 +1012,9 @@
         }
         emitPlayerState(false);
       };
+      };
+      bindAudioElement($('audio'));
+      bindAudioElement($('audioB'));
     }
 
     async function boot() {
@@ -994,6 +1045,8 @@
       applyInvitePageMode();
       setPlaylistDockOpen(state.playlistDockOpen);
       syncUploadMode();
+      syncJukeboxModeControls();
+      renderJukeboxQueue();
       setUploadProgress(0, 0, 0);
       hidePlayer();
       clearSelectedPlaylist();

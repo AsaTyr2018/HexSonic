@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -205,6 +206,7 @@ func (s *Server) Router() http.Handler {
 			priv.Get("/me", s.me)
 			priv.Get("/me/profile", s.meProfileGet)
 			priv.Patch("/me/profile", s.meProfileUpdate)
+			priv.Post("/me/jukebox/reset", s.meJukeboxReset)
 			priv.Post("/me/avatar", s.meAvatarUpload)
 			priv.Post("/me/banner", s.meBannerUpload)
 			priv.Post("/me/password", s.mePasswordUpdate)
@@ -213,6 +215,10 @@ func (s *Server) Router() http.Handler {
 			priv.Get("/me/notifications", s.meNotifications)
 			priv.Post("/me/notifications/{notificationID}/read", s.meNotificationRead)
 			priv.Post("/me/notifications/read-all", s.meNotificationsReadAll)
+			priv.Post("/jukebox/start", s.jukeboxStart)
+			priv.Post("/jukebox/next", s.jukeboxNext)
+			priv.Post("/jukebox/feedback", s.jukeboxFeedback)
+			priv.Get("/jukebox/sessions/{sessionID}", s.jukeboxSession)
 			priv.Get("/favorites", s.listFavorites)
 			priv.Post("/favorites", s.addFavorite)
 			priv.Delete("/favorites/{kind}/{targetID}", s.removeFavorite)
@@ -568,6 +574,7 @@ func (s *Server) meProfileGet(w http.ResponseWriter, r *http.Request) {
 	}
 	creatorBadge, _ := s.userIsCreator(r.Context(), claims.Subject)
 	hasSubsonicPassword, _ := s.userHasSubsonicPassword(r.Context(), claims.Subject)
+	jukeboxSummary, _ := s.userJukeboxSummary(r.Context(), claims.Subject)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"subject":                          claims.Subject,
 		"username":                         claims.Username,
@@ -582,6 +589,7 @@ func (s *Server) meProfileGet(w http.ResponseWriter, r *http.Request) {
 		"featured_album_id":                profile.FeaturedAlbumID,
 		"featured_album_ids":               profile.FeaturedAlbumIDs,
 		"featured_playlist_id":             profile.FeaturedPlaylistID,
+		"jukebox_preferred_genres":         profile.JukeboxPreferredGenres,
 		"guest_show_followers":             profile.GuestShowFollowers,
 		"guest_show_playlists":             profile.GuestShowPlaylists,
 		"guest_show_favorites":             profile.GuestShowFavorites,
@@ -591,6 +599,8 @@ func (s *Server) meProfileGet(w http.ResponseWriter, r *http.Request) {
 		"banner_url":                       userBannerURL(claims.Subject, profile.BannerPath),
 		"creator_badge":                    creatorBadge,
 		"has_subsonic_password":            hasSubsonicPassword,
+		"jukebox_tuning":                   jukeboxSummary.Tuning,
+		"jukebox_feedback_history":         jukeboxSummary.History,
 	})
 }
 
@@ -601,19 +611,20 @@ func (s *Server) meProfileUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		DisplayName        string  `json:"display_name"`
-		Bio                string  `json:"bio"`
-		Email              string  `json:"email"`
-		StatusLine         string  `json:"status_line"`
-		AccentColor        string  `json:"accent_color"`
-		FeaturedAlbumID    *int64  `json:"featured_album_id"`
-		FeaturedAlbumIDs   []int64 `json:"featured_album_ids"`
-		FeaturedPlaylistID *int64  `json:"featured_playlist_id"`
-		GuestShowFollowers *bool   `json:"guest_show_followers"`
-		GuestShowPlaylists *bool   `json:"guest_show_playlists"`
-		GuestShowFavorites *bool   `json:"guest_show_favorites"`
-		GuestShowStats     *bool   `json:"guest_show_stats"`
-		GuestShowUploads   *bool   `json:"guest_show_uploads"`
+		DisplayName            string   `json:"display_name"`
+		Bio                    string   `json:"bio"`
+		Email                  string   `json:"email"`
+		StatusLine             string   `json:"status_line"`
+		AccentColor            string   `json:"accent_color"`
+		FeaturedAlbumID        *int64   `json:"featured_album_id"`
+		FeaturedAlbumIDs       []int64  `json:"featured_album_ids"`
+		FeaturedPlaylistID     *int64   `json:"featured_playlist_id"`
+		JukeboxPreferredGenres []string `json:"jukebox_preferred_genres"`
+		GuestShowFollowers     *bool    `json:"guest_show_followers"`
+		GuestShowPlaylists     *bool    `json:"guest_show_playlists"`
+		GuestShowFavorites     *bool    `json:"guest_show_favorites"`
+		GuestShowStats         *bool    `json:"guest_show_stats"`
+		GuestShowUploads       *bool    `json:"guest_show_uploads"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
@@ -662,6 +673,7 @@ func (s *Server) meProfileUpdate(w http.ResponseWriter, r *http.Request) {
 		featuredAlbumIDs = nil
 		req.FeaturedPlaylistID = nil
 	}
+	jukeboxPreferredGenres := normalizeGenreList(req.JukeboxPreferredGenres)
 	if err := s.enforceDisplayNameChangePolicy(r.Context(), claims.Subject, displayName, auth.HasRole(claims, "admin")); err != nil {
 		if errors.Is(err, errDisplayNameChangeCooldown) {
 			http.Error(w, "display_name can only be changed once every 30 days", http.StatusTooManyRequests)
@@ -670,7 +682,7 @@ func (s *Server) meProfileUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "display_name policy check failed", http.StatusInternalServerError)
 		return
 	}
-	if err := s.upsertRichUserProfile(r.Context(), claims.Subject, displayName, bio, statusLine, accentColor, normalizedProfileRole("", creatorBadge), featuredAlbumIDs, req.FeaturedPlaylistID, guestShowFollowers, guestShowPlaylists, guestShowFavorites, guestShowStats, guestShowUploads); err != nil {
+	if err := s.upsertRichUserProfile(r.Context(), claims.Subject, displayName, bio, statusLine, accentColor, normalizedProfileRole("", creatorBadge), featuredAlbumIDs, req.FeaturedPlaylistID, jukeboxPreferredGenres, guestShowFollowers, guestShowPlaylists, guestShowFavorites, guestShowStats, guestShowUploads); err != nil {
 		if errors.Is(err, errProfileAliasTaken) {
 			http.Error(w, "display_name already in use", http.StatusConflict)
 			return
@@ -691,14 +703,40 @@ func (s *Server) meProfileUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = s.writeAudit(r.Context(), claims.Subject, "user.update_profile", "user", claims.Subject, map[string]any{
-		"display_name":         displayName,
-		"email":                email,
-		"status_line":          statusLine,
-		"accent_color":         accentColor,
-		"featured_album_ids":   featuredAlbumIDs,
-		"featured_playlist_id": req.FeaturedPlaylistID,
+		"display_name":             displayName,
+		"email":                    email,
+		"status_line":              statusLine,
+		"accent_color":             accentColor,
+		"featured_album_ids":       featuredAlbumIDs,
+		"featured_playlist_id":     req.FeaturedPlaylistID,
+		"jukebox_preferred_genres": jukeboxPreferredGenres,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) meJukeboxReset(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), `
+		UPDATE jukebox_sessions
+		SET options_json='{}'::jsonb, updated_at=now(), last_activity_at=now()
+		WHERE user_sub=$1 AND status='active'
+	`, claims.Subject); err != nil {
+		http.Error(w, "jukebox reset failed", http.StatusInternalServerError)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), `
+		DELETE FROM jukebox_feedback_events
+		WHERE user_sub=$1
+	`, claims.Subject); err != nil {
+		http.Error(w, "jukebox reset failed", http.StatusInternalServerError)
+		return
+	}
+	_ = s.writeAudit(r.Context(), claims.Subject, "user.reset_jukebox", "user", claims.Subject, nil)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 }
 
 func (s *Server) meAvatarUpload(w http.ResponseWriter, r *http.Request) {
@@ -1803,6 +1841,88 @@ func (s *Server) recordListeningEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+func (s *Server) jukeboxStart(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	s.proxyJukeboxJSON(w, r, claims.Subject, http.MethodPost, "/internal/jukebox/start")
+}
+
+func (s *Server) jukeboxNext(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	s.proxyJukeboxJSON(w, r, claims.Subject, http.MethodPost, "/internal/jukebox/next")
+}
+
+func (s *Server) jukeboxFeedback(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	s.proxyJukeboxJSON(w, r, claims.Subject, http.MethodPost, "/internal/jukebox/feedback")
+}
+
+func (s *Server) jukeboxSession(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	sessionID := strings.TrimSpace(chi.URLParam(r, "sessionID"))
+	if sessionID == "" {
+		http.Error(w, "missing session id", http.StatusBadRequest)
+		return
+	}
+	s.proxyJukeboxJSON(w, r, claims.Subject, http.MethodGet, "/internal/jukebox/sessions/"+url.PathEscape(sessionID))
+}
+
+func (s *Server) proxyJukeboxJSON(w http.ResponseWriter, r *http.Request, userSub, method, path string) {
+	baseURL := strings.TrimRight(strings.TrimSpace(s.cfg.JukeboxURL), "/")
+	if baseURL == "" {
+		http.Error(w, "jukebox unavailable", http.StatusBadGateway)
+		return
+	}
+	targetURL := baseURL + path
+	var body io.Reader
+	if method != http.MethodGet && r.Body != nil {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		body = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(r.Context(), method, targetURL, body)
+	if err != nil {
+		http.Error(w, "jukebox request failed", http.StatusBadGateway)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Hexsonic-User-Sub", userSub)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(w, "jukebox unavailable", http.StatusBadGateway)
+		return
+	}
+	defer res.Body.Close()
+	for key, values := range res.Header {
+		if strings.EqualFold(key, "Content-Length") {
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(res.StatusCode)
+	_, _ = io.Copy(w, res.Body)
 }
 
 func (s *Server) discoveryOverview(w http.ResponseWriter, r *http.Request) {
@@ -5246,23 +5366,37 @@ func (s *Server) adminGetSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "settings unavailable", http.StatusInternalServerError)
 		return
 	}
+	jukeboxMaxTrackPerHour, err := s.jukeboxMaxTrackPlaysPerHour(r.Context())
+	if err != nil {
+		http.Error(w, "settings unavailable", http.StatusInternalServerError)
+		return
+	}
+	jukeboxMaxCreatorPerHour, err := s.jukeboxMaxCreatorTracksPerHour(r.Context())
+	if err != nil {
+		http.Error(w, "settings unavailable", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"registration_enabled":  enabled,
-		"debug_logging_enabled": debugEnabled,
+		"registration_enabled":                enabled,
+		"debug_logging_enabled":               debugEnabled,
+		"jukebox_max_track_plays_per_hour":    jukeboxMaxTrackPerHour,
+		"jukebox_max_creator_tracks_per_hour": jukeboxMaxCreatorPerHour,
 	})
 }
 
 func (s *Server) adminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
 	var req struct {
-		RegistrationEnabled *bool `json:"registration_enabled"`
-		DebugLoggingEnabled *bool `json:"debug_logging_enabled"`
+		RegistrationEnabled            *bool `json:"registration_enabled"`
+		DebugLoggingEnabled            *bool `json:"debug_logging_enabled"`
+		JukeboxMaxTrackPlaysPerHour    *int  `json:"jukebox_max_track_plays_per_hour"`
+		JukeboxMaxCreatorTracksPerHour *int  `json:"jukebox_max_creator_tracks_per_hour"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
-	if req.RegistrationEnabled == nil && req.DebugLoggingEnabled == nil {
+	if req.RegistrationEnabled == nil && req.DebugLoggingEnabled == nil && req.JukeboxMaxTrackPlaysPerHour == nil && req.JukeboxMaxCreatorTracksPerHour == nil {
 		http.Error(w, "no changes provided", http.StatusBadRequest)
 		return
 	}
@@ -5280,6 +5414,28 @@ func (s *Server) adminUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updated["debug_logging_enabled"] = *req.DebugLoggingEnabled
+	}
+	if req.JukeboxMaxTrackPlaysPerHour != nil {
+		if *req.JukeboxMaxTrackPlaysPerHour < 1 || *req.JukeboxMaxTrackPlaysPerHour > 24 {
+			http.Error(w, "jukebox_max_track_plays_per_hour out of range", http.StatusBadRequest)
+			return
+		}
+		if err := s.setJukeboxMaxTrackPlaysPerHour(r.Context(), *req.JukeboxMaxTrackPlaysPerHour); err != nil {
+			http.Error(w, "update settings failed", http.StatusInternalServerError)
+			return
+		}
+		updated["jukebox_max_track_plays_per_hour"] = *req.JukeboxMaxTrackPlaysPerHour
+	}
+	if req.JukeboxMaxCreatorTracksPerHour != nil {
+		if *req.JukeboxMaxCreatorTracksPerHour < 1 || *req.JukeboxMaxCreatorTracksPerHour > 240 {
+			http.Error(w, "jukebox_max_creator_tracks_per_hour out of range", http.StatusBadRequest)
+			return
+		}
+		if err := s.setJukeboxMaxCreatorTracksPerHour(r.Context(), *req.JukeboxMaxCreatorTracksPerHour); err != nil {
+			http.Error(w, "update settings failed", http.StatusInternalServerError)
+			return
+		}
+		updated["jukebox_max_creator_tracks_per_hour"] = *req.JukeboxMaxCreatorTracksPerHour
 	}
 	_ = s.writeAudit(r.Context(), claims.Subject, "admin.update_settings", "system", "settings", updated)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "updated", "updated": updated})
@@ -5467,7 +5623,7 @@ func (s *Server) adminUpdateUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		creatorBadge, _ := s.userIsCreator(r.Context(), userID)
-		if err := s.upsertRichUserProfile(r.Context(), userID, displayName, settings.Bio, settings.StatusLine, settings.AccentColor, normalizedProfileRole(settings.ProfileRole, creatorBadge), settings.FeaturedAlbumIDs, settings.FeaturedPlaylistID, settings.GuestShowFollowers, settings.GuestShowPlaylists, settings.GuestShowFavorites, settings.GuestShowStats, settings.GuestShowUploads); err != nil {
+		if err := s.upsertRichUserProfile(r.Context(), userID, displayName, settings.Bio, settings.StatusLine, settings.AccentColor, normalizedProfileRole(settings.ProfileRole, creatorBadge), settings.FeaturedAlbumIDs, settings.FeaturedPlaylistID, settings.JukeboxPreferredGenres, settings.GuestShowFollowers, settings.GuestShowPlaylists, settings.GuestShowFavorites, settings.GuestShowStats, settings.GuestShowUploads); err != nil {
 			if errors.Is(err, errProfileAliasTaken) {
 				http.Error(w, "display_name already in use", http.StatusConflict)
 				return
@@ -6249,22 +6405,28 @@ func (s *Server) resolveUserSubjectByIdentifier(ctx context.Context, identifier 
 }
 
 type profileSettings struct {
-	DisplayName          string
-	Bio                  string
-	AvatarPath           string
-	BannerPath           string
-	StatusLine           string
-	AccentColor          string
-	ProfileRole          string
-	FeaturedAlbumID      *int64
-	FeaturedAlbumIDs     []int64
-	FeaturedPlaylistID   *int64
-	DisplayNameChangedAt *time.Time
-	GuestShowFollowers   bool
-	GuestShowPlaylists   bool
-	GuestShowFavorites   bool
-	GuestShowStats       bool
-	GuestShowUploads     bool
+	DisplayName            string
+	Bio                    string
+	AvatarPath             string
+	BannerPath             string
+	StatusLine             string
+	AccentColor            string
+	ProfileRole            string
+	FeaturedAlbumID        *int64
+	FeaturedAlbumIDs       []int64
+	FeaturedPlaylistID     *int64
+	JukeboxPreferredGenres []string
+	DisplayNameChangedAt   *time.Time
+	GuestShowFollowers     bool
+	GuestShowPlaylists     bool
+	GuestShowFavorites     bool
+	GuestShowStats         bool
+	GuestShowUploads       bool
+}
+
+type jukeboxProfileSummary struct {
+	Tuning  map[string]any
+	History []map[string]any
 }
 
 func (s *Server) userProfileSettingsBySub(ctx context.Context, userSub string) (profileSettings, error) {
@@ -6289,6 +6451,7 @@ func (s *Server) userProfileSettingsBySub(ctx context.Context, userSub string) (
 			featured_album_id,
 			COALESCE(featured_album_ids, '{}'::BIGINT[]),
 			featured_playlist_id,
+			COALESCE(jukebox_preferred_genres, '{}'::TEXT[]),
 			display_name_changed_at,
 			COALESCE(guest_show_followers,true),
 			COALESCE(guest_show_playlists,true),
@@ -6308,6 +6471,7 @@ func (s *Server) userProfileSettingsBySub(ctx context.Context, userSub string) (
 		&out.FeaturedAlbumID,
 		&out.FeaturedAlbumIDs,
 		&out.FeaturedPlaylistID,
+		&out.JukeboxPreferredGenres,
 		&out.DisplayNameChangedAt,
 		&out.GuestShowFollowers,
 		&out.GuestShowPlaylists,
@@ -6330,6 +6494,135 @@ func (s *Server) userProfileSettingsBySub(ctx context.Context, userSub string) (
 	return out, nil
 }
 
+func (s *Server) userJukeboxSummary(ctx context.Context, userSub string) (jukeboxProfileSummary, error) {
+	out := jukeboxProfileSummary{
+		Tuning: map[string]any{
+			"boosted_genres":   []string{},
+			"muted_genres":     []string{},
+			"boosted_creators": []string{},
+			"muted_creators":   []string{},
+			"fixed_genre":      "",
+			"surprise_bias":    0,
+		},
+		History: []map[string]any{},
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT COALESCE(options_json, '{}'::jsonb)
+		FROM jukebox_sessions
+		WHERE user_sub=$1 AND status='active'
+		ORDER BY updated_at DESC
+	`, userSub)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+
+	boostedGenres := map[string]bool{}
+	mutedGenres := map[string]bool{}
+	boostedCreators := map[string]bool{}
+	mutedCreators := map[string]bool{}
+	fixedGenre := ""
+	surpriseBias := 0
+
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return out, err
+		}
+		var opts struct {
+			BoostedGenres   []string `json:"boosted_genres"`
+			MutedGenres     []string `json:"muted_genres"`
+			BoostedCreators []string `json:"boosted_creators"`
+			MutedCreators   []string `json:"muted_creators"`
+			FixedGenre      string   `json:"fixed_genre"`
+			SurpriseBias    int      `json:"surprise_bias"`
+		}
+		_ = json.Unmarshal(raw, &opts)
+		for _, item := range opts.BoostedGenres {
+			if v := strings.TrimSpace(item); v != "" {
+				boostedGenres[v] = true
+			}
+		}
+		for _, item := range opts.MutedGenres {
+			if v := strings.TrimSpace(item); v != "" {
+				mutedGenres[v] = true
+			}
+		}
+		for _, item := range opts.BoostedCreators {
+			if v := strings.TrimSpace(item); v != "" {
+				boostedCreators[v] = true
+			}
+		}
+		for _, item := range opts.MutedCreators {
+			if v := strings.TrimSpace(item); v != "" {
+				mutedCreators[v] = true
+			}
+		}
+		if fixedGenre == "" && strings.TrimSpace(opts.FixedGenre) != "" {
+			fixedGenre = strings.TrimSpace(opts.FixedGenre)
+		}
+		if opts.SurpriseBias > surpriseBias {
+			surpriseBias = opts.SurpriseBias
+		}
+	}
+
+	out.Tuning["boosted_genres"] = sortedKeys(boostedGenres)
+	out.Tuning["muted_genres"] = sortedKeys(mutedGenres)
+	out.Tuning["boosted_creators"] = sortedKeys(boostedCreators)
+	out.Tuning["muted_creators"] = sortedKeys(mutedCreators)
+	out.Tuning["fixed_genre"] = fixedGenre
+	out.Tuning["surprise_bias"] = surpriseBias
+
+	historyRows, err := s.db.Query(ctx, `
+		SELECT
+			jfe.action,
+			COALESCE(t.title, ''),
+			COALESCE(al.title, ''),
+			COALESCE(t.genre, ''),
+			COALESCE(NULLIF(up.display_name, ''), t.owner_sub, ''),
+			jfe.created_at
+		FROM jukebox_feedback_events jfe
+		LEFT JOIN tracks t ON t.id=jfe.track_id
+		LEFT JOIN albums al ON al.id=t.album_id
+		LEFT JOIN user_profiles up ON up.user_sub=t.owner_sub
+		WHERE jfe.user_sub=$1
+		ORDER BY jfe.created_at DESC
+		LIMIT 24
+	`, userSub)
+	if err != nil {
+		return out, err
+	}
+	defer historyRows.Close()
+	for historyRows.Next() {
+		var action, trackTitle, albumTitle, genre, creator string
+		var createdAt time.Time
+		if err := historyRows.Scan(&action, &trackTitle, &albumTitle, &genre, &creator, &createdAt); err != nil {
+			return out, err
+		}
+		out.History = append(out.History, map[string]any{
+			"action":      action,
+			"track_title": trackTitle,
+			"album_title": albumTitle,
+			"genre":       genre,
+			"creator":     creator,
+			"created_at":  createdAt,
+		})
+	}
+	return out, nil
+}
+
+func sortedKeys(values map[string]bool) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	slices.SortFunc(out, func(a, b string) int {
+		return strings.Compare(strings.ToLower(a), strings.ToLower(b))
+	})
+	return out
+}
+
 func (s *Server) upsertUserProfile(ctx context.Context, userSub, displayName, bio string) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO user_profiles(user_sub, display_name, bio, updated_at)
@@ -6342,9 +6635,10 @@ func (s *Server) upsertUserProfile(ctx context.Context, userSub, displayName, bi
 	return err
 }
 
-func (s *Server) upsertRichUserProfile(ctx context.Context, userSub, displayName, bio, statusLine, accentColor, profileRole string, featuredAlbumIDs []int64, featuredPlaylistID *int64, guestShowFollowers, guestShowPlaylists, guestShowFavorites, guestShowStats, guestShowUploads bool) error {
+func (s *Server) upsertRichUserProfile(ctx context.Context, userSub, displayName, bio, statusLine, accentColor, profileRole string, featuredAlbumIDs []int64, featuredPlaylistID *int64, jukeboxPreferredGenres []string, guestShowFollowers, guestShowPlaylists, guestShowFavorites, guestShowStats, guestShowUploads bool) error {
 	displayName = strings.TrimSpace(displayName)
 	featuredAlbumIDs = normalizeFeaturedAlbumIDs(featuredAlbumIDs, nil)
+	jukeboxPreferredGenres = normalizeGenreList(jukeboxPreferredGenres)
 	var featuredAlbumID *int64
 	if len(featuredAlbumIDs) > 0 {
 		featuredAlbumID = &featuredAlbumIDs[0]
@@ -6370,10 +6664,10 @@ func (s *Server) upsertRichUserProfile(ctx context.Context, userSub, displayName
 	displayNameChanged := !strings.EqualFold(strings.TrimSpace(previousDisplayName), displayName)
 	_, err = tx.Exec(ctx, `
 		INSERT INTO user_profiles(
-			user_sub, display_name, bio, status_line, accent_color, profile_role, featured_album_id, featured_album_ids, featured_playlist_id, display_name_changed_at,
+			user_sub, display_name, bio, status_line, accent_color, profile_role, featured_album_id, featured_album_ids, featured_playlist_id, jukebox_preferred_genres, display_name_changed_at,
 			guest_show_followers, guest_show_playlists, guest_show_favorites, guest_show_stats, guest_show_uploads, updated_at
 		)
-		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $10 THEN now() ELSE NULL END, $11, $12, $13, $14, $15, now())
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CASE WHEN $11 THEN now() ELSE NULL END, $12, $13, $14, $15, $16, now())
 		ON CONFLICT (user_sub) DO UPDATE
 		SET display_name=EXCLUDED.display_name,
 		    bio=EXCLUDED.bio,
@@ -6383,6 +6677,7 @@ func (s *Server) upsertRichUserProfile(ctx context.Context, userSub, displayName
 		    featured_album_id=EXCLUDED.featured_album_id,
 		    featured_album_ids=EXCLUDED.featured_album_ids,
 		    featured_playlist_id=EXCLUDED.featured_playlist_id,
+		    jukebox_preferred_genres=EXCLUDED.jukebox_preferred_genres,
 		    display_name_changed_at = CASE
 		      WHEN lower(COALESCE(user_profiles.display_name,'')) IS DISTINCT FROM lower(COALESCE(EXCLUDED.display_name,'')) THEN now()
 		      ELSE user_profiles.display_name_changed_at
@@ -6393,7 +6688,7 @@ func (s *Server) upsertRichUserProfile(ctx context.Context, userSub, displayName
 		    guest_show_stats=EXCLUDED.guest_show_stats,
 		    guest_show_uploads=EXCLUDED.guest_show_uploads,
 		    updated_at=now()
-	`, userSub, displayName, bio, statusLine, accentColor, profileRole, featuredAlbumID, featuredAlbumIDs, featuredPlaylistID, displayNameChanged, guestShowFollowers, guestShowPlaylists, guestShowFavorites, guestShowStats, guestShowUploads)
+	`, userSub, displayName, bio, statusLine, accentColor, profileRole, featuredAlbumID, featuredAlbumIDs, featuredPlaylistID, jukeboxPreferredGenres, displayNameChanged, guestShowFollowers, guestShowPlaylists, guestShowFavorites, guestShowStats, guestShowUploads)
 	if err != nil {
 		return err
 	}
@@ -6455,6 +6750,27 @@ func normalizeFeaturedAlbumIDs(ids []int64, fallback *int64) []int64 {
 	}
 	if len(out) == 0 && fallback != nil {
 		appendID(*fallback)
+	}
+	return out
+}
+
+func normalizeGenreList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		v := strings.TrimSpace(value)
+		if v == "" {
+			continue
+		}
+		key := strings.ToLower(v)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, v)
+		if len(out) >= 12 {
+			break
+		}
 	}
 	return out
 }
@@ -7425,6 +7741,48 @@ func (s *Server) setDebugLoggingEnabled(ctx context.Context, enabled bool) error
 		ON CONFLICT (key) DO UPDATE
 		SET value_text=EXCLUDED.value_text, updated_at=now()
 	`, strconv.FormatBool(enabled))
+	return err
+}
+
+func (s *Server) jukeboxMaxTrackPlaysPerHour(ctx context.Context) (int, error) {
+	return s.appSettingInt(ctx, "jukebox_max_track_plays_per_hour", 1)
+}
+
+func (s *Server) setJukeboxMaxTrackPlaysPerHour(ctx context.Context, value int) error {
+	return s.setAppSettingText(ctx, "jukebox_max_track_plays_per_hour", strconv.Itoa(value))
+}
+
+func (s *Server) jukeboxMaxCreatorTracksPerHour(ctx context.Context) (int, error) {
+	return s.appSettingInt(ctx, "jukebox_max_creator_tracks_per_hour", 12)
+}
+
+func (s *Server) setJukeboxMaxCreatorTracksPerHour(ctx context.Context, value int) error {
+	return s.setAppSettingText(ctx, "jukebox_max_creator_tracks_per_hour", strconv.Itoa(value))
+}
+
+func (s *Server) appSettingInt(ctx context.Context, key string, fallback int) (int, error) {
+	var raw string
+	err := s.db.QueryRow(ctx, `SELECT value_text FROM app_settings WHERE key=$1`, key).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fallback, nil
+		}
+		return fallback, err
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return fallback, nil
+	}
+	return v, nil
+}
+
+func (s *Server) setAppSettingText(ctx context.Context, key, value string) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO app_settings(key, value_text, updated_at)
+		VALUES($1, $2, now())
+		ON CONFLICT (key) DO UPDATE
+		SET value_text=EXCLUDED.value_text, updated_at=now()
+	`, key, value)
 	return err
 }
 

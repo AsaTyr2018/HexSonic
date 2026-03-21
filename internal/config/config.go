@@ -22,6 +22,8 @@ type Config struct {
 	GrafanaProxyURL    string
 	PrometheusPublic   string
 	GrafanaPublic      string
+	JukeboxURL         string
+	JukeboxHTTPAddr    string
 	StorageRoot        string
 	TempRoot           string
 	SigningKey         string
@@ -57,6 +59,8 @@ func Load() (Config, error) {
 		GrafanaProxyURL:    getEnv("HEXSONIC_GRAFANA_PROXY_URL", "http://grafana:3000"),
 		PrometheusPublic:   getEnv("HEXSONIC_PROMETHEUS_PUBLIC_URL", ""),
 		GrafanaPublic:      getEnv("HEXSONIC_GRAFANA_PUBLIC_URL", ""),
+		JukeboxURL:         getEnv("HEXSONIC_JUKEBOX_URL", "http://jukebox:8082"),
+		JukeboxHTTPAddr:    getEnv("HEXSONIC_JUKEBOX_HTTP_ADDR", ":8082"),
 		StorageRoot:        getEnv("HEXSONIC_STORAGE_ROOT", "./data"),
 		TempRoot:           getEnv("HEXSONIC_TEMP_ROOT", "./data/temp"),
 		SigningKey:         getEnv("HEXSONIC_SIGNING_KEY", ""),

@@ -65,6 +65,24 @@ services:
       HEXSONIC_GRAFANA_PROXY_URL: "${HEXSONIC_GRAFANA_PROXY_URL:-http://grafana:3000}"
       HEXSONIC_PROMETHEUS_PUBLIC_URL: "${HEXSONIC_PROMETHEUS_PUBLIC_URL:-}"
       HEXSONIC_GRAFANA_PUBLIC_URL: "${HEXSONIC_GRAFANA_PUBLIC_URL:-}"
+      HEXSONIC_JUKEBOX_URL: "${HEXSONIC_JUKEBOX_URL:-http://jukebox:8082}"
+    volumes:
+      - ./runtime/data:/data
+
+  jukebox:
+    build: .
+    command: ["hexsonic-jukebox"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HEXSONIC_JUKEBOX_HTTP_ADDR: ":8082"
+      HEXSONIC_DATABASE_URL: "postgres://hexsonic:${HEXSONIC_DB_PASSWORD:?HEXSONIC_DB_PASSWORD is required}@postgres:5432/hexsonic?sslmode=disable"
+      HEXSONIC_REDIS_ADDR: "valkey:6379"
+      HEXSONIC_STORAGE_ROOT: "/data"
+      HEXSONIC_SIGNING_KEY: "${HEXSONIC_SIGNING_KEY:?HEXSONIC_SIGNING_KEY is required}"
+      HEXSONIC_AUTH_REQUIRED: "false"
     volumes:
       - ./runtime/data:/data
 

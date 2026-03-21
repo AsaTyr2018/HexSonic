@@ -86,6 +86,12 @@ const canUpload = (...args) => ns.canUpload(...args);
           await selectAlbum(id);
         };
       });
+      $('discoveryGrid').querySelectorAll('[data-discovery-open-jukebox]').forEach((btn) => {
+        btn.onclick = () => {
+          if (!state.me) return;
+          ns.switchView('jukebox');
+        };
+      });
     }
 
     function renderDiscovery() {
@@ -109,6 +115,19 @@ const canUpload = (...args) => ns.canUpload(...args);
         ? (personal.summary || 'Personal and global discovery active.')
         : 'Global discovery is active. Login enables personal recommendations.';
       root.innerHTML = `
+        ${state.me ? `
+        <div class="discovery-column discovery-jukebox-launch" style="grid-column: 1 / -1; min-height: unset;">
+          <div class="discovery-column-head">
+            <div class="discovery-column-title">Jukebox</div>
+            <span class="pill ok">Auto DJ</span>
+          </div>
+          <div class="discovery-column-intro">
+            <div class="muted">Adaptive radio with its own queue, driven by your taste profile and public discovery signals.</div>
+          </div>
+          <div class="discovery-track-actions" style="margin-top:2px;">
+            <button class="btn primary" data-discovery-open-jukebox="1">Open Jukebox</button>
+          </div>
+        </div>` : ''}
         <div class="discovery-column">
           <div class="discovery-column-head">
             <div class="discovery-column-title">${songsTitle}</div>

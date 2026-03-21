@@ -22,6 +22,7 @@
     }
     function allowedViewOrDefault(view) {
       if (view === 'playlists' && !ns.canCreatePlaylists()) view = 'discovery';
+      if (view === 'jukebox' && !state.me) view = 'discovery';
       if (view === 'favorites' && !state.me) view = 'discovery';
       if (view === 'profile' && !state.me) view = 'discovery';
       if ((view === 'admin_users' || view === 'admin_system' || view === 'admin_logs') && !canAdmin()) view = 'discovery';
@@ -31,7 +32,7 @@
       if (view === 'jobs' && !canAdmin()) view = 'discovery';
       if (view === 'creator_stats' && !canUpload()) view = 'discovery';
       if (view === 'invite_register' && !state.inviteToken) view = 'discovery';
-      const valid = new Set(['discovery', 'creators', 'albums', 'tracks', 'playlists', 'favorites', 'profile', 'admin_users', 'admin_system', 'admin_logs', 'track_detail', 'upload', 'user_track_manage', 'admin_track_manage', 'album_manage', 'creator_stats', 'jobs', 'user_profile', 'invite_register']);
+      const valid = new Set(['discovery', 'jukebox', 'creators', 'albums', 'tracks', 'playlists', 'favorites', 'profile', 'admin_users', 'admin_system', 'admin_logs', 'track_detail', 'upload', 'user_track_manage', 'admin_track_manage', 'album_manage', 'creator_stats', 'jobs', 'user_profile', 'invite_register']);
       if (!valid.has(view)) view = 'discovery';
       return view;
     }
@@ -57,6 +58,7 @@
 
     document.querySelectorAll('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.view === view));
     $('viewDiscovery').classList.toggle('hidden', view !== 'discovery');
+    $('viewJukebox').classList.toggle('hidden', view !== 'jukebox');
     $('viewCreators').classList.toggle('hidden', view !== 'creators');
     $('viewAlbums').classList.toggle('hidden', view !== 'albums');
     $('viewTracks').classList.toggle('hidden', view !== 'tracks');
@@ -100,6 +102,9 @@
     }
     if (view === 'favorites' && state.me) {
       ns.loadFavorites().then(() => ns.renderFavorites());
+    }
+    if (view === 'jukebox' && state.me) {
+      ns.renderJukebox();
     }
     if (view === 'creator_stats' && canUpload()) {
       ns.loadCreatorStats();

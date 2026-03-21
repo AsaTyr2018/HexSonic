@@ -50,6 +50,7 @@ HEXSONIC focuses on:
 - Personal discovery for logged-in users (`For You`)
 - Recommendation scoring based on listening behavior, ratings, playlist adds, and skips
 - Discovery-oriented playback source tracking
+- `Jukebox` beta mode with adaptive rolling queue, live feedback controls, and personal radio-style playback
 
 ### Creator Analytics
 - Dedicated `Creator Stats` view in the WebUI
@@ -93,6 +94,7 @@ Project contributors provide software only and do not assume liability for opera
 - Creator-oriented upload and management flows
 - Album + track ownership logic
 - Built-in discovery landing page with personal + global recommendation layers
+- Beta `Jukebox` engine for personalized radio-style playback
 - Creator-facing analytics for uploaded content
 - OIDC authentication (Keycloak)
 - Admin observability (Grafana + Prometheus via app routes)
@@ -266,4 +268,3 @@ See [LICENSE](LICENSE).
 <img width="1267" height="725" alt="grafik" src="https://github.com/user-attachments/assets/95a4870b-7511-4c8f-b8dc-f1c2c0049b0d" />
 <img width="1479" height="669" alt="grafik" src="https://github.com/user-attachments/assets/6b705a4a-617c-454b-8f83-ebe691666906" />
 <img width="1715" height="785" alt="grafik" src="https://github.com/user-attachments/assets/e7514684-88c5-49d5-a8b3-d22b971f5d19" />
-

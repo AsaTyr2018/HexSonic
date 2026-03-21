@@ -34,6 +34,15 @@
       adminSystemOverview: null,
       discovery: null,
       discoveryTab: 'top',
+      jukebox: {
+        mode: 'for_you',
+        session_id: '',
+        queue: [],
+        current_position: 0,
+        seed_genre: '',
+        seed_creator_sub: '',
+        seed_album_id: 0
+      },
       myProfile: null,
       creatorStats: null,
       creatorHighscore: [],
@@ -69,7 +78,19 @@
       popQueueFilter: '',
       popQueueFollowCurrent: localStorage.getItem('hex_pop_queue_follow') !== '0',
       popVizPrevBins: [],
-      listeningSession: null
+      listeningSession: null,
+      streamSignCache: {}
+      ,
+      playerDeck: {
+        activeAudioId: 'audio',
+        standbyAudioId: 'audioB',
+        currentSourceContext: '',
+        crossfadeSeconds: 5,
+        crossfadeTimer: null,
+        crossfading: false,
+        crossfadeTrackId: '',
+        crossfadeTargetIndex: -1
+      }
     };
     const ICON_PLAY = '\u25b6';
     const ICON_PAUSE = '\u23f8';

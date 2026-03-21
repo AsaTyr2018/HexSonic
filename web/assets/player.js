@@ -7,6 +7,55 @@ const renderPlaylistDock = (...args) => ns.renderPlaylistDock(...args);
 const selectAlbum = (...args) => ns.selectAlbum(...args);
 const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...args);
 
+    function audioById(id) {
+      return $(id);
+    }
+
+    function activeAudio() {
+      return audioById(state.playerDeck?.activeAudioId || 'audio') || $('audio');
+    }
+
+    function standbyAudio() {
+      return audioById(state.playerDeck?.standbyAudioId || 'audioB') || $('audioB');
+    }
+
+    function swapAudioDecks() {
+      const currentActive = state.playerDeck.activeAudioId || 'audio';
+      state.playerDeck.activeAudioId = state.playerDeck.standbyAudioId || 'audioB';
+      state.playerDeck.standbyAudioId = currentActive;
+    }
+
+    function syncDeckVolumes() {
+      const fx = state.audioFX;
+      const active = activeAudio();
+      const standby = standbyAudio();
+      if (!active || !standby) return;
+      if (fx && fx.gainA && fx.gainB) {
+        const gainActive = state.playerDeck.activeAudioId === 'audio' ? fx.gainA : fx.gainB;
+        const gainStandby = state.playerDeck.activeAudioId === 'audio' ? fx.gainB : fx.gainA;
+        if (!state.playerDeck.crossfading) {
+          gainActive.gain.value = active.muted ? 0 : 1;
+          gainStandby.gain.value = 0;
+        }
+      }
+    }
+
+    function isJukeboxPlayback() {
+      const ctx = String(state.playerDeck?.currentSourceContext || '');
+      return ctx.startsWith('jukebox');
+    }
+
+    function stopCrossfade() {
+      if (state.playerDeck?.crossfadeTimer) {
+        window.clearInterval(state.playerDeck.crossfadeTimer);
+        state.playerDeck.crossfadeTimer = null;
+      }
+      state.playerDeck.crossfading = false;
+      state.playerDeck.crossfadeTrackId = '';
+      state.playerDeck.crossfadeTargetIndex = -1;
+      syncDeckVolumes();
+    }
+
     function isPopoutPlayerMode() {
       const u = new URL(window.location.href);
       return (u.searchParams.get('popout_player') || '') === '1' || String(window.location.hash || '').replace(/^#/, '') === 'player_popout';
@@ -88,7 +137,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     function buildPlayerSnapshot() {
-      const audio = $('audio');
+      const audio = activeAudio();
       const track = currentTrackFromQueue();
       return {
         at: Date.now(),
@@ -131,7 +180,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     function buildPlayerTick() {
-      const audio = $('audio');
+      const audio = activeAudio();
       return {
         at: Date.now(),
         current_time: Number(audio.currentTime || 0),
@@ -158,7 +207,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     async function applyPlayerControl(action, value) {
-      const audio = $('audio');
+      const audio = activeAudio();
       if (action === 'play_pause') {
         if (!audio.src) return;
         if (audio.paused) {
@@ -194,12 +243,15 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       if (action === 'volume') {
         const v = Math.max(0, Math.min(100, Number(value || 0)));
         audio.volume = v / 100;
+        standbyAudio().volume = audio.volume;
         $('volumeRange').value = String(v);
         emitPlayerState(true);
         return;
       }
       if (action === 'mute_toggle') {
         audio.muted = !audio.muted;
+        standbyAudio().muted = audio.muted;
+        syncDeckVolumes();
         updatePlayerButtons();
         emitPlayerState(true);
         return;
@@ -752,7 +804,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     function updatePlayerButtons() {
-      const a = $('audio');
+      const a = activeAudio();
       const volumePct = Math.round(((a.volume || 0) * 100));
       $('btnPlayPause').textContent = a.paused ? ICON_PLAY : ICON_PAUSE;
       $('btnMute').textContent = a.muted ? ICON_MUTE : ICON_UNMUTE;
@@ -775,6 +827,11 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
 
     function findAlbumForTrack(track) {
       if (!track) return null;
+      const directAlbumID = Number(track.album_id || track.albumID || 0);
+      if (directAlbumID > 0) {
+        const direct = state.albums.find((a) => Number(a.id || 0) === directAlbumID);
+        if (direct) return direct;
+      }
       return state.albums.find((a) => {
         if (normText(a.title) !== normText(track.album)) return false;
         if (!track.artist || !a.artist) return true;
@@ -853,11 +910,17 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
 
     function ensureAudioFX() {
       if (state.audioFX) return state.audioFX;
-      const audio = $('audio');
+      const audioA = $('audio');
+      const audioB = $('audioB');
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return null;
       const ctx = new Ctx();
-      const source = ctx.createMediaElementSource(audio);
+      const sourceA = ctx.createMediaElementSource(audioA);
+      const sourceB = ctx.createMediaElementSource(audioB);
+      const gainA = ctx.createGain();
+      const gainB = ctx.createGain();
+      gainA.gain.value = 1;
+      gainB.gain.value = 0;
       const freqs = [60, 170, 350, 1000, 3500, 10000];
       const filters = freqs.map((f, idx) => {
         const biquad = ctx.createBiquadFilter();
@@ -869,7 +932,10 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         else biquad.type = 'peaking';
         return biquad;
       });
-      source.connect(filters[0]);
+      sourceA.connect(gainA);
+      sourceB.connect(gainB);
+      gainA.connect(filters[0]);
+      gainB.connect(filters[0]);
       for (let i = 0; i < filters.length - 1; i++) {
         filters[i].connect(filters[i + 1]);
       }
@@ -878,7 +944,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       analyser.smoothingTimeConstant = 0.82;
       filters[filters.length - 1].connect(analyser);
       analyser.connect(ctx.destination);
-      state.audioFX = { ctx, source, filters, analyser };
+      state.audioFX = { ctx, sourceA, sourceB, gainA, gainB, filters, analyser };
       return state.audioFX;
     }
 
@@ -926,13 +992,142 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       return await res.json();
     }
 
+    async function ensureSignedStream(trackId, format = 'mp3') {
+      const key = `${trackId}:${format}`;
+      const cached = state.streamSignCache[key];
+      const now = Math.floor(Date.now() / 1000);
+      if (cached && Number(cached.expires_unix || 0) > (now + 8)) {
+        return cached;
+      }
+      const signed = await signStream(trackId, format);
+      if (signed) state.streamSignCache[key] = signed;
+      return signed;
+    }
+
+    async function primeNextSignedStream(queue, index) {
+      const next = Array.isArray(queue) ? queue[index + 1] : null;
+      if (!next || !next.id) return;
+      await ensureSignedStream(next.id, 'mp3');
+    }
+
+    async function maybeScheduleJukeboxCrossfade() {
+      if (!isJukeboxPlayback()) return;
+      if (state.playerDeck.crossfading) return;
+      const audio = activeAudio();
+      if (!audio || !audio.src || audio.paused) return;
+      const idx = Number(state.queueIndex || 0);
+      const nextIndex = idx + 1;
+      const nextTrack = state.queue[nextIndex];
+      if (!nextTrack || !nextTrack.id) return;
+      const duration = Number(audio.duration || 0);
+      const currentTime = Number(audio.currentTime || 0);
+      if (!Number.isFinite(duration) || duration <= 0) return;
+      const remaining = duration - currentTime;
+      const crossfadeSeconds = Math.max(2, Number(state.playerDeck.crossfadeSeconds || 5));
+      if (remaining > crossfadeSeconds) return;
+      const trackKey = `${state.nowPlayingTrackId}:${nextTrack.id}`;
+      if (state.playerDeck.crossfadeTrackId === trackKey) return;
+      state.playerDeck.crossfadeTrackId = trackKey;
+      state.playerDeck.crossfadeTargetIndex = nextIndex;
+      await startJukeboxCrossfade(nextIndex);
+    }
+
+    async function startJukeboxCrossfade(nextIndex) {
+      if (state.playerDeck.crossfading) return;
+      const current = activeAudio();
+      const standby = standbyAudio();
+      const nextTrack = state.queue[nextIndex];
+      if (!current || !standby || !nextTrack) return;
+      const signed = await ensureSignedStream(nextTrack.id, 'mp3');
+      if (!signed) return;
+      state.playerDeck.crossfading = true;
+      standby.pause();
+      standby.src = `/api/v1/stream/${nextTrack.id}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
+      standby.preload = 'auto';
+      standby.currentTime = 0;
+      standby.volume = current.volume;
+      standby.muted = current.muted;
+      await resumeAudioContextIfNeeded();
+      const fx = ensureAudioFX();
+      if (fx && fx.gainA && fx.gainB) {
+        const activeGain = state.playerDeck.activeAudioId === 'audio' ? fx.gainA : fx.gainB;
+        const standbyGain = state.playerDeck.activeAudioId === 'audio' ? fx.gainB : fx.gainA;
+        activeGain.gain.value = current.muted ? 0 : 1;
+        standbyGain.gain.value = 0;
+      }
+      try {
+        await standby.play();
+      } catch (_) {
+        stopCrossfade();
+        return;
+      }
+      const fadeMs = Math.max(2000, Number(state.playerDeck.crossfadeSeconds || 5) * 1000);
+      const startedAt = Date.now();
+      const previousTrack = state.queue[state.queueIndex] || null;
+      const sourceContext = String(state.playerDeck.currentSourceContext || '');
+      state.playerDeck.crossfadeTimer = window.setInterval(async () => {
+        const elapsed = Date.now() - startedAt;
+        const ratio = Math.max(0, Math.min(1, elapsed / fadeMs));
+        if (fx && fx.gainA && fx.gainB) {
+          const activeGain = state.playerDeck.activeAudioId === 'audio' ? fx.gainA : fx.gainB;
+          const standbyGain = state.playerDeck.activeAudioId === 'audio' ? fx.gainB : fx.gainA;
+          activeGain.gain.value = current.muted ? 0 : (1 - ratio);
+          standbyGain.gain.value = standby.muted ? 0 : ratio;
+        } else {
+          current.volume = Math.max(0, (1 - ratio) * (standby.volume || 0.7));
+          standby.volume = Math.max(0, ratio * (standby.volume || 0.7));
+        }
+        if (ratio < 1) return;
+        stopCrossfade();
+        current.pause();
+        current.src = '';
+        swapAudioDecks();
+        syncDeckVolumes();
+        state.queueIndex = nextIndex;
+        state.nowPlayingTrackId = normTrackID(nextTrack.id);
+        if (state.jukebox && state.jukebox.session_id) {
+          state.jukebox.current_position = Math.max(0, nextIndex);
+        }
+        if (previousTrack && state.listeningSession && state.listeningSession.track_id === previousTrack.id) {
+          finalizeListeningSession('natural_end');
+        }
+        beginListeningSession(nextTrack, sourceContext);
+        await loadTrackLyrics(nextTrack.id);
+        await updateNowPlayingVisuals(nextTrack);
+        if (state.selectedPlaylistTracks.length) {
+          renderPlaylistTracks();
+        } else {
+          renderPlaylistDock();
+        }
+        if (state.currentView === 'jukebox' && typeof ns.renderJukeboxNowPlaying === 'function') {
+          ns.renderJukeboxNowPlaying();
+          if (typeof ns.renderJukeboxQueue === 'function') ns.renderJukeboxQueue();
+        }
+        primeNextSignedStream(state.queue, state.queueIndex).catch(() => {});
+        updatePlayerButtons();
+        emitPlayerState(true);
+      }, 100);
+    }
+
     async function startTrackById(trackId, sourceList = state.filteredTracks, sourceContext = '') {
       const t = sourceList.find((x) => x.id === trackId);
       if (!t) return;
+      const isJukeboxQueue = !!(
+        state.jukebox &&
+        state.jukebox.session_id &&
+        Array.isArray(state.jukebox.queue) &&
+        state.jukebox.queue.length === sourceList.length &&
+        state.jukebox.queue.every((item, idx) => normTrackID(item?.id) === normTrackID(sourceList[idx]?.id))
+      );
+      if (!sourceContext && isJukeboxQueue) {
+        sourceContext = `jukebox:${state.jukebox.mode || 'for_you'}`;
+      }
+      state.playerDeck.currentSourceContext = sourceContextForPlayback(sourceContext);
+      stopCrossfade();
       if (state.listeningSession && state.listeningSession.track_id !== trackId) {
         finalizeListeningSession('switch');
       }
-      const signed = await signStream(trackId, 'mp3');
+      const signed = await ensureSignedStream(trackId, 'mp3');
       if (!signed) {
         alert('Play requires login and permission for this track.');
         return;
@@ -941,9 +1136,18 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       state.queue = sourceList;
       state.queueIndex = sourceList.findIndex((x) => x.id === trackId);
       state.nowPlayingTrackId = normTrackID(trackId);
+      if (state.jukebox && state.jukebox.session_id && Array.isArray(state.jukebox.queue) && sourceContextForPlayback(sourceContext).startsWith('jukebox')) {
+        state.jukebox.queue = sourceList.slice();
+        state.jukebox.current_position = Math.max(0, state.queueIndex);
+      }
 
-      const audio = $('audio');
+      const audio = activeAudio();
+      const standby = standbyAudio();
+      standby.pause();
+      standby.src = '';
       audio.src = `/api/v1/stream/${trackId}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
+      audio.preload = 'auto';
+      audio.volume = Number($('volumeRange')?.value || 70) / 100;
       await resumeAudioContextIfNeeded();
       await audio.play();
       beginListeningSession(t, sourceContext);
@@ -957,6 +1161,11 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         renderPlaylistDock();
       }
       showPlayer();
+      if (state.currentView === 'jukebox' && typeof ns.renderJukeboxNowPlaying === 'function') {
+        ns.renderJukeboxNowPlaying();
+        if (typeof ns.renderJukeboxQueue === 'function') ns.renderJukeboxQueue();
+      }
+      primeNextSignedStream(state.queue, state.queueIndex).catch(() => {});
       closePanels();
       emitPlayerState(true);
     }
@@ -1036,6 +1245,11 @@ Object.assign(window.HexSonic, {
       eqPresetGains,
       applyEQPreset,
       signStream,
+      ensureSignedStream,
+      primeNextSignedStream,
+      activeAudio,
+      standbyAudio,
+      maybeScheduleJukeboxCrossfade,
       startTrackById,
       playAlbum,
       insertQueueAfterCurrent,

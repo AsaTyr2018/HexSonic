@@ -121,6 +121,7 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
           $(id).disabled = true;
         });
         $('profileFeaturedPlaylist').value = '';
+        $('profileJukeboxGenres').value = '';
         $('profileGuestShowFollowers').checked = true;
         $('profileGuestShowPlaylists').checked = true;
         $('profileGuestShowFavorites').checked = false;
@@ -163,6 +164,8 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
         $(id).disabled = !isCreator;
       });
       $('profileFeaturedPlaylist').value = p.featured_playlist_id ? String(p.featured_playlist_id) : '';
+      $('profileJukeboxGenres').value = Array.isArray(p.jukebox_preferred_genres) ? p.jukebox_preferred_genres.join(', ') : '';
+      renderProfileJukeboxSummary(p);
       $('profileGuestShowFollowers').checked = !!p.guest_show_followers;
       $('profileGuestShowPlaylists').checked = !!p.guest_show_playlists;
       $('profileGuestShowFavorites').checked = !!p.guest_show_favorites;
@@ -218,6 +221,51 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
       syncProfilePreviewFromForm();
     }
 
+    function renderProfileJukeboxSummary(profile) {
+      const tuning = profile?.jukebox_tuning || {};
+      const history = Array.isArray(profile?.jukebox_feedback_history) ? profile.jukebox_feedback_history : [];
+      const tuningEl = $('profileJukeboxTuning');
+      const historyBody = $('profileJukeboxHistoryBody');
+      if (tuningEl) {
+        const blocks = [];
+        const boostedGenres = Array.isArray(tuning.boosted_genres) ? tuning.boosted_genres : [];
+        const mutedGenres = Array.isArray(tuning.muted_genres) ? tuning.muted_genres : [];
+        const boostedCreators = Array.isArray(tuning.boosted_creators) ? tuning.boosted_creators : [];
+        const mutedCreators = Array.isArray(tuning.muted_creators) ? tuning.muted_creators : [];
+        const fixedGenre = String(tuning.fixed_genre || '').trim();
+        const surpriseBias = Number(tuning.surprise_bias || 0);
+        if (boostedGenres.length) blocks.push(`<div><b>More genres:</b> ${escapeHtml(boostedGenres.join(', '))}</div>`);
+        if (mutedGenres.length) blocks.push(`<div><b>Less genres:</b> ${escapeHtml(mutedGenres.join(', '))}</div>`);
+        if (boostedCreators.length) blocks.push(`<div><b>Boosted creators:</b> ${escapeHtml(boostedCreators.join(', '))}</div>`);
+        if (mutedCreators.length) blocks.push(`<div><b>Muted creators:</b> ${escapeHtml(mutedCreators.join(', '))}</div>`);
+        if (fixedGenre) blocks.push(`<div><b>Genre lock:</b> ${escapeHtml(fixedGenre)}</div>`);
+        if (surpriseBias > 0) blocks.push(`<div><b>Surprise bias:</b> ${surpriseBias}</div>`);
+        tuningEl.innerHTML = blocks.length ? blocks.join('') : '<span class="muted">No active tuning yet.</span>';
+      }
+      if (historyBody) {
+        if (!history.length) {
+          historyBody.innerHTML = '<tr><td colspan="4" class="muted">No feedback recorded yet.</td></tr>';
+          return;
+        }
+        historyBody.innerHTML = history.map((item) => {
+          const action = String(item.action || '').replaceAll('_', ' ');
+          const title = String(item.track_title || '').trim() || '-';
+          const genre = String(item.genre || '').trim() || '-';
+          const createdAt = item.created_at ? new Date(item.created_at) : null;
+          const timeLabel = createdAt && Number.isFinite(createdAt.getTime()) ? createdAt.toLocaleString() : '-';
+          return `<tr>
+            <td>${escapeHtml(action)}</td>
+            <td>
+              <div class="track-main-title">${escapeHtml(title)}</div>
+              <div class="uploader-inline">${escapeHtml(String(item.album_title || '').trim() || String(item.creator || '').trim() || '-')}</div>
+            </td>
+            <td>${escapeHtml(genre)}</td>
+            <td>${escapeHtml(timeLabel)}</td>
+          </tr>`;
+        }).join('');
+      }
+    }
+
     function syncProfilePreviewFromForm() {
       const displayName = $('profileDisplayName')?.value?.trim() || state.myProfile?.display_name || state.me?.username || 'User';
       const username = state.me?.username || state.myProfile?.username || 'user';
@@ -255,6 +303,7 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
         accent_color: $('profileAccentColor')?.value?.trim() || '',
         featured_album_ids: featuredAlbumIDs,
         featured_playlist_id: $('profileFeaturedPlaylist')?.value ? Number($('profileFeaturedPlaylist').value) : null,
+        jukebox_preferred_genres: String($('profileJukeboxGenres')?.value || '').split(',').map((x) => x.trim()).filter(Boolean),
         guest_show_followers: !!$('profileGuestShowFollowers')?.checked,
         guest_show_playlists: !!$('profileGuestShowPlaylists')?.checked,
         guest_show_favorites: !!$('profileGuestShowFavorites')?.checked,
@@ -691,6 +740,7 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
         accent_color: $('profileAccentColor').value.trim(),
         featured_album_ids: featuredAlbumIDs,
         featured_playlist_id: $('profileFeaturedPlaylist').value ? Number($('profileFeaturedPlaylist').value) : null,
+        jukebox_preferred_genres: $('profileJukeboxGenres').value.split(',').map((x) => x.trim()).filter(Boolean),
         guest_show_followers: $('profileGuestShowFollowers').checked,
         guest_show_playlists: $('profileGuestShowPlaylists').checked,
         guest_show_favorites: $('profileGuestShowFavorites').checked,
@@ -709,6 +759,19 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
       state.profileSaveState = 'saved';
       await loadMyProfile();
       await loadMe();
+    }
+
+    async function resetMyJukeboxProfile() {
+      const res = await apiFetch('/api/v1/me/jukebox/reset', {
+        method: 'POST',
+        headers: headers()
+      });
+      if (!res.ok) {
+        alert(`Jukebox reset failed (${res.status}).`);
+        return;
+      }
+      state.profileSaveState = 'saved';
+      await loadMyProfile();
     }
 
     async function uploadMyAvatar() {
@@ -1074,6 +1137,7 @@ Object.assign(window.HexSonic, {
       setFavoritesTab,
       renderFavorites,
       saveMyProfile,
+      resetMyJukeboxProfile,
       uploadMyAvatar,
       uploadMyBanner,
       updateMyPassword,

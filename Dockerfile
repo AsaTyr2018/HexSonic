@@ -5,12 +5,14 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/hexsonic-api ./cmd/hexsonic-api
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/hexsonic-worker ./cmd/hexsonic-worker
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/hexsonic-jukebox ./cmd/hexsonic-jukebox
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/hexsonic-api /usr/local/bin/hexsonic-api
 COPY --from=build /out/hexsonic-worker /usr/local/bin/hexsonic-worker
+COPY --from=build /out/hexsonic-jukebox /usr/local/bin/hexsonic-jukebox
 COPY web ./web
 EXPOSE 8080
 CMD ["hexsonic-api"]
