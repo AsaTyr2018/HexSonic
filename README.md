@@ -264,7 +264,14 @@ See [LICENSE](LICENSE).
 
 
 ## Screenshots
-<img width="1916" height="889" alt="grafik" src="https://github.com/user-attachments/assets/a4fdc758-e424-4aec-9a6a-377fec17a188" />
-<img width="1267" height="725" alt="grafik" src="https://github.com/user-attachments/assets/95a4870b-7511-4c8f-b8dc-f1c2c0049b0d" />
-<img width="1479" height="669" alt="grafik" src="https://github.com/user-attachments/assets/6b705a4a-617c-454b-8f83-ebe691666906" />
-<img width="1715" height="785" alt="grafik" src="https://github.com/user-attachments/assets/e7514684-88c5-49d5-a8b3-d22b971f5d19" />
+<img width="1911" height="886" alt="grafik" src="https://github.com/user-attachments/assets/a802e5cc-35e6-44cc-800d-c7f4ccae7cdc" />
+<img width="1657" height="621" alt="grafik" src="https://github.com/user-attachments/assets/5e08b7f9-169a-4e60-b21d-a7b0f2c2df44" />
+<img width="1914" height="877" alt="grafik" src="https://github.com/user-attachments/assets/99b59d85-6926-4f06-bfe1-4a72fe8e239c" />
+<img width="1058" height="744" alt="grafik" src="https://github.com/user-attachments/assets/f1910395-357c-4957-8793-418d303c756b" />
+<img width="1909" height="878" alt="grafik" src="https://github.com/user-attachments/assets/2f553ccb-6515-42d4-84cd-103fb1201c46" />
+<img width="1673" height="692" alt="grafik" src="https://github.com/user-attachments/assets/3f183055-ec4f-4695-a40b-19a67803f846" />
+<img width="1732" height="793" alt="grafik" src="https://github.com/user-attachments/assets/8b99477e-4480-4c3b-8ee2-378b552d023c" />
+
+
+
+
