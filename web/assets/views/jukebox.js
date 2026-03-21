@@ -1,6 +1,11 @@
 (function(ns) {
   const { state, $, escapeHtml, headers, apiFetch, fmt } = ns;
   const openTrackDetail = (...args) => ns.openTrackDetail(...args);
+  const jukeboxActiveAudio = (...args) => ns.jukeboxActiveAudio(...args);
+  const resumeAudioContextIfNeeded = (...args) => ns.resumeAudioContextIfNeeded(...args);
+  const emitJukeboxState = (...args) => ns.emitJukeboxState(...args);
+  const emitJukeboxTick = (...args) => ns.emitJukeboxTick(...args);
+  const openJukeboxPopout = (...args) => ns.openJukeboxPopout(...args);
   function isJukeboxActive() {
     return !!(state.me && state.jukebox && state.jukebox.session_id);
   }
@@ -33,13 +38,23 @@
   }
 
   function syncJukeboxFromPlayerState() {
-    const sourceContext = String(state.playerDeck?.currentSourceContext || '');
-    if (!sourceContext.startsWith('jukebox')) return;
-    if (!Array.isArray(state.queue) || !state.queue.length) return;
-    state.jukebox.queue = state.queue.slice();
-    if (Number.isFinite(Number(state.queueIndex)) && Number(state.queueIndex) >= 0) {
-      state.jukebox.current_position = Number(state.queueIndex);
-    }
+    if (!Array.isArray(state.jukeboxPlayer?.queue) || !state.jukeboxPlayer.queue.length) return;
+    state.jukebox.queue = state.jukeboxPlayer.queue.slice();
+    state.jukebox.current_position = Number(state.jukeboxPlayer.queueIndex || 0);
+  }
+
+  function updateJukeboxControls() {
+    const audio = jukeboxActiveAudio();
+    if (!audio) return;
+    $('btnJukeboxPlayPause').textContent = audio.paused ? '▶' : '⏸';
+    $('btnJukeboxMute').textContent = audio.muted ? '🔇' : '🔊';
+    $('jukeboxVolumeLabel').textContent = `${Math.round((audio.volume || 0) * 100)}%`;
+    $('jukeboxVolumeRange').value = String(Math.round((audio.volume || 0) * 100));
+    $('jukeboxElapsedLabel').textContent = fmt(Number(audio.currentTime || 0));
+    $('jukeboxDurationLabel').textContent = fmt(Number(audio.duration || 0));
+    const d = Number(audio.duration || 0);
+    const p = d > 0 ? Number(audio.currentTime || 0) / d : 0;
+    $('jukeboxSeekRange').value = String(Math.max(0, Math.min(1000, Math.round(p * 1000))));
   }
 
   function applyJukeboxSnapshot(json) {
@@ -52,7 +67,6 @@
       seed_creator_sub: json.seed_creator_sub || '',
       seed_album_id: Number(json.seed_album_id || 0)
     };
-    state.queue = state.jukebox.queue.slice();
     $('jukeboxSummary').textContent = json.summary || 'Adaptive radio for logged-in listeners. Public tracks only.';
     $('jukeboxLaneLabel').textContent = modeLane(state.jukebox);
     $('jukeboxSessionMeta').textContent = state.jukebox.session_id
@@ -78,12 +92,12 @@
     const current = queue[Number(state.jukebox.current_position || 0)] || null;
     if (!current) {
       box.innerHTML = '<div class="muted">No active track yet.</div>';
+      updateJukeboxControls();
       return;
     }
-    const audio = typeof ns.activeAudio === 'function' ? ns.activeAudio() : $('audio');
-    const isLive = String(state.currentView || '') === 'jukebox' && state.nowPlayingTrackId && String(state.nowPlayingTrackId) === String(current.id || '');
-    const currentTime = isLive ? Number(audio?.currentTime || 0) : 0;
-    const duration = isLive ? Number(audio?.duration || current.duration_seconds || 0) : Number(current.duration_seconds || 0);
+    const audio = jukeboxActiveAudio();
+    const currentTime = Number(audio?.currentTime || 0);
+    const duration = Number(audio?.duration || current.duration_seconds || 0);
     const progress = duration > 0 ? Math.max(0, Math.min(100, (currentTime / duration) * 100)) : 0;
     box.innerHTML = `
       <div class="jukebox-now-kicker">Live selection</div>
@@ -111,6 +125,7 @@
         await openTrackDetail(detail.getAttribute('data-jukebox-detail'));
       };
     }
+    updateJukeboxControls();
   }
 
   function renderJukeboxQueue() {
@@ -178,6 +193,53 @@
     }
   }
 
+  async function applyJukeboxControl(action, value) {
+    const audio = jukeboxActiveAudio();
+    if (!audio) return;
+    if (action === 'play_pause') {
+      if (!audio.src) return;
+      if (audio.paused) {
+        await resumeAudioContextIfNeeded();
+        await audio.play();
+      } else {
+        audio.pause();
+      }
+      updateJukeboxControls();
+      emitJukeboxState(true);
+      return;
+    }
+    if (action === 'prev') {
+      if (!state.jukebox.queue.length) return;
+      const prev = Math.max(0, Number(state.jukebox.current_position || 0) - 1);
+      await startJukeboxTrack(prev);
+      return;
+    }
+    if (action === 'next') {
+      await handleJukeboxAdvance();
+      return;
+    }
+    if (action === 'mute_toggle') {
+      audio.muted = !audio.muted;
+      updateJukeboxControls();
+      emitJukeboxState(true);
+      return;
+    }
+    if (action === 'seek') {
+      if (!audio.duration || Number.isNaN(audio.duration)) return;
+      const p = Math.max(0, Math.min(1, Number(value || 0)));
+      audio.currentTime = audio.duration * p;
+      updateJukeboxControls();
+      emitJukeboxState(true);
+      return;
+    }
+    if (action === 'volume') {
+      const v = Math.max(0, Math.min(100, Number(value || 0)));
+      audio.volume = v / 100;
+      updateJukeboxControls();
+      emitJukeboxState(true);
+    }
+  }
+
   async function refreshJukeboxQueue() {
     if (!isJukeboxActive()) return;
     const res = await apiFetch('/api/v1/jukebox/next', {
@@ -224,8 +286,7 @@
     const track = queue[idx];
     if (!track) return;
     state.jukebox.current_position = idx;
-    state.queue = queue.slice();
-    await ns.startTrackById(track.id, queue, `jukebox:${state.jukebox.mode}`);
+    await ns.startJukeboxTrackById(track.id, queue, `jukebox:${state.jukebox.mode}`);
     renderJukeboxNowPlaying();
     renderJukeboxQueue();
     if ((queue.length - idx) <= 3) {
@@ -252,14 +313,12 @@
     $('jukeboxLaneLabel').textContent = modeLane(state.jukebox);
     renderJukeboxNowPlaying();
     renderJukeboxQueue();
-    if (state.me && (!Array.isArray(state.jukebox.queue) || !state.jukebox.queue.length)) {
-      await startJukeboxSession();
-    }
   }
 
   Object.assign(ns, {
     syncJukeboxModeControls,
     syncJukeboxFromPlayerState,
+    updateJukeboxControls,
     applyJukeboxSnapshot,
     renderJukeboxNowPlaying,
     renderJukeboxQueue,
@@ -268,6 +327,7 @@
     sendJukeboxFeedback,
     startJukeboxTrack,
     handleJukeboxAdvance,
+    applyJukeboxControl,
     renderJukebox
   });
 })(window.HexSonic = window.HexSonic || {});

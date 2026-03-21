@@ -1,7 +1,9 @@
 (function(ns) {
-const { state, $, headers, apiFetch, escapeHtml } = ns;
+const { state, $, headers, apiFetch, escapeHtml, fmt } = ns;
 const canAdmin = (...args) => ns.canAdmin(...args);
 const isFavorite = (...args) => ns.isFavorite(...args);
+const toggleFavorite = (...args) => ns.toggleFavorite(...args);
+const isActiveTrack = (...args) => ns.isActiveTrack(...args);
 const startTrackById = (...args) => ns.startTrackById(...args);
 const openTrackDetail = (...args) => ns.openTrackDetail(...args);
 const openUserProfile = (...args) => ns.openUserProfile(...args);

@@ -39,6 +39,7 @@
       readViewFromHash,
       switchView,
       isPopoutPlayerMode,
+      isJukeboxPopoutMode,
       applyPopoutPlayerMode,
       parseSRTTimeToMs,
       parseSRTLyrics,
@@ -62,7 +63,9 @@
       renderPopoutSnapshot,
       applyPopoutTick,
       initPlayerBridge,
+      initJukeboxBridge,
       bindPopoutEvents,
+      bindJukeboxPopoutEvents,
       closePanels,
       showPlayer,
       hidePlayer,
@@ -81,6 +84,9 @@
       signStream,
       startTrackById,
       activeAudio,
+      emitJukeboxState,
+      emitJukeboxTick,
+      openJukeboxPopout,
       maybeScheduleJukeboxCrossfade,
       playAlbum,
       insertQueueAfterCurrent,
@@ -126,11 +132,13 @@
       renderCreatorStats,
       loadCreatorStats,
       syncJukeboxModeControls,
+      updateJukeboxControls,
       renderJukeboxNowPlaying,
       renderJukeboxQueue,
       startJukeboxSession,
       refreshJukeboxQueue,
       sendJukeboxFeedback,
+      applyJukeboxControl,
       handleJukeboxAdvance,
       renderJukebox,
       canCreatePlaylists,
@@ -808,12 +816,9 @@
       $('btnCreatorHighscoreRefresh').onclick = loadCreatorHighscore;
       $('creatorHighscoreWindow').onchange = loadCreatorHighscore;
       document.querySelectorAll('[data-jukebox-mode]').forEach((btn) => {
-        btn.onclick = async () => {
+        btn.onclick = () => {
           state.jukebox.mode = btn.getAttribute('data-jukebox-mode') || 'for_you';
           syncJukeboxModeControls();
-          if (state.me) {
-            await startJukeboxSession();
-          }
         };
       });
       $('btnJukeboxStart').onclick = startJukeboxSession;
@@ -822,6 +827,13 @@
       $('btnJukeboxLessLike').onclick = () => sendJukeboxFeedback('less_like_this');
       $('btnJukeboxStayGenre').onclick = () => sendJukeboxFeedback('stay_in_genre');
       $('btnJukeboxSurprise').onclick = () => sendJukeboxFeedback('surprise_me');
+      $('btnJukeboxPlayPause').onclick = () => applyJukeboxControl('play_pause');
+      $('btnJukeboxPrev').onclick = () => applyJukeboxControl('prev');
+      $('btnJukeboxNext').onclick = () => applyJukeboxControl('next');
+      $('btnJukeboxMute').onclick = () => applyJukeboxControl('mute_toggle');
+      $('jukeboxSeekRange').oninput = (e) => applyJukeboxControl('seek', Number(e.target.value) / 1000);
+      $('jukeboxVolumeRange').oninput = (e) => applyJukeboxControl('volume', Number(e.target.value));
+      $('btnJukeboxPopout').onclick = openJukeboxPopout;
       $('adminUserSearch').addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
@@ -953,53 +965,105 @@
       };
 
       const bindAudioElement = (audio) => {
+      const isJukeboxDeck = audio && audio.id !== 'audio';
       audio.volume = 0.7;
-      updatePlayerButtons();
-      applyEQPreset($('eqPreset').value);
+      if (!isJukeboxDeck) {
+        updatePlayerButtons();
+        applyEQPreset($('eqPreset').value);
+      }
       audio.onloadedmetadata = () => {
+        if (isJukeboxDeck) {
+          updateJukeboxControls();
+          emitJukeboxState(true);
+          return;
+        }
         if (audio !== activeAudio()) return;
         $('durationLabel').textContent = fmt(audio.duration || 0);
         emitPlayerState(true);
       };
       audio.ontimeupdate = () => {
+        if (isJukeboxDeck) {
+          if (audio !== ns.jukeboxActiveAudio()) return;
+          updateListeningSession(audio.currentTime, audio.duration || 0);
+          maybeScheduleJukeboxCrossfade();
+          updateJukeboxControls();
+          if (state.currentView === 'jukebox' && typeof renderJukeboxNowPlaying === 'function') {
+            renderJukeboxNowPlaying();
+          }
+          emitJukeboxTick();
+          return;
+        }
         if (audio !== activeAudio()) return;
         const p = audio.duration ? (audio.currentTime / audio.duration) : 0;
         $('seekRange').value = Math.round(p * 1000);
         $('elapsedLabel').textContent = fmt(audio.currentTime);
         $('durationLabel').textContent = fmt(audio.duration || 0);
         updateListeningSession(audio.currentTime, audio.duration || 0);
-        maybeScheduleJukeboxCrossfade();
-        if (state.currentView === 'jukebox' && typeof renderJukeboxNowPlaying === 'function') {
-          renderJukeboxNowPlaying();
-        }
         emitPlayerState(false);
       };
       audio.onended = async () => {
+        if (isJukeboxDeck) {
+          if (audio !== ns.jukeboxActiveAudio()) return;
+          if (state.jukeboxPlayer?.crossfading) return;
+          finalizeListeningSession('natural_end');
+          await handleJukeboxAdvance();
+          return;
+        }
         if (audio !== activeAudio()) return;
-        if (state.playerDeck && state.playerDeck.crossfading) return;
-        if (!state.queue.length) return;
+        if ((state.activeEngine || 'main') === 'jukebox' && state.jukeboxPlayer?.crossfading) return;
+        const queue = (state.activeEngine || 'main') === 'jukebox'
+          ? (state.jukeboxPlayer?.queue || [])
+          : (state.mainPlayer?.queue || []);
+        let queueIndex = (state.activeEngine || 'main') === 'jukebox'
+          ? Number(state.jukeboxPlayer?.queueIndex || -1)
+          : Number(state.mainPlayer?.queueIndex || -1);
+        if (!queue.length || queueIndex < 0) return;
         finalizeListeningSession('natural_end');
         if (await handleJukeboxAdvance()) return;
-        state.queueIndex = (state.queueIndex + 1) % state.queue.length;
-        await startTrackById(state.queue[state.queueIndex].id, state.queue);
+        queueIndex = (queueIndex + 1) % queue.length;
+        state.mainPlayer.queueIndex = queueIndex;
+        await startTrackById(queue[queueIndex].id, queue);
       };
       audio.onpause = () => {
+        if (isJukeboxDeck) {
+          if (audio !== ns.jukeboxActiveAudio()) return;
+          updateJukeboxControls();
+          emitJukeboxState(true);
+          return;
+        }
         if (audio !== activeAudio()) return;
         updatePlayerButtons();
         emitPlayerState(true);
       };
       audio.onplay = () => {
+        if (isJukeboxDeck) {
+          if (audio !== ns.jukeboxActiveAudio()) return;
+          updateJukeboxControls();
+          emitJukeboxState(true);
+          return;
+        }
         if (audio !== activeAudio()) return;
         updatePlayerButtons();
         emitPlayerState(true);
       };
       audio.onvolumechange = () => {
+        if (isJukeboxDeck) {
+          if (audio !== ns.jukeboxActiveAudio()) return;
+          updateJukeboxControls();
+          emitJukeboxState(false);
+          return;
+        }
         if (audio !== activeAudio()) return;
         $('volumeRange').value = String(Math.round((audio.volume || 0) * 100));
         updatePlayerButtons();
         emitPlayerState(false);
       };
       audio.onseeked = () => {
+        if (isJukeboxDeck) {
+          if (audio !== ns.jukeboxActiveAudio()) return;
+          emitJukeboxState(false);
+          return;
+        }
         if (audio !== activeAudio()) return;
         const s = state.listeningSession;
         if (s && s.track_id) {
@@ -1014,29 +1078,38 @@
       };
       };
       bindAudioElement($('audio'));
-      bindAudioElement($('audioB'));
+      bindAudioElement($('audioJukeboxA'));
+      bindAudioElement($('audioJukeboxB'));
     }
 
     async function boot() {
       $('loginUser').value = '';
       state.popoutMode = isPopoutPlayerMode();
+      state.jukeboxPopoutMode = isJukeboxPopoutMode();
       applyPopoutPlayerMode();
       initPlayerBridge();
+      initJukeboxBridge();
       if (state.popoutMode) {
         bindPopoutEvents();
-        renderPopoutSnapshot({
-          track: null,
-          queue: [],
-          queue_index: -1,
-          paused: true,
-          muted: false,
-          volume: 70,
-          current_time: 0,
-          duration: 0,
-          eq: 'flat',
-          lyrics: { plain: '', cues: [] },
-          bins: []
-        });
+        if (!state.popoutSnapshot || !state.popoutSnapshot.track) {
+          renderPopoutSnapshot({
+            track: null,
+            queue: [],
+            queue_index: -1,
+            paused: true,
+            muted: false,
+            volume: 70,
+            current_time: 0,
+            duration: 0,
+            eq: 'flat',
+            lyrics: { plain: '', cues: [] },
+            bins: []
+          });
+        }
+        return;
+      }
+      if (state.jukeboxPopoutMode) {
+        bindJukeboxPopoutEvents();
         return;
       }
       bindEvents();

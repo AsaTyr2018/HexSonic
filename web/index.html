@@ -147,6 +147,22 @@
               <div id="jukeboxNowPlaying" class="jukebox-now-card">
                 <div class="muted">Start a session to begin.</div>
               </div>
+              <div class="jukebox-actions" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
+                <button class="btn" id="btnJukeboxPrev" title="Previous">&#9198;</button>
+                <button class="btn primary" id="btnJukeboxPlayPause" title="Play/Pause">&#9654;</button>
+                <button class="btn" id="btnJukeboxNext" title="Next">&#9197;</button>
+                <button class="btn" id="btnJukeboxMute" title="Mute">&#128266;</button>
+                <button class="btn" id="btnJukeboxPopout" title="Open Jukebox popout">Popout</button>
+              </div>
+              <div class="timeline-row" style="margin-top:10px;">
+                <span class="timecode" id="jukeboxElapsedLabel">00:00</span>
+                <input id="jukeboxSeekRange" type="range" min="0" max="1000" value="0" />
+                <span class="timecode" id="jukeboxDurationLabel">00:00</span>
+              </div>
+              <div class="jukebox-actions" style="margin-top:8px; align-items:center;">
+                <span class="muted" id="jukeboxVolumeLabel">70%</span>
+                <input id="jukeboxVolumeRange" type="range" min="0" max="100" value="70" style="max-width:220px;" />
+              </div>
               <div class="panel-title" style="margin-top:12px;">Up Next</div>
               <div id="jukeboxQueueMeta" class="muted">Start a session to build your Jukebox queue.</div>
               <div class="table-wrap" style="margin-top:10px;">
@@ -1113,7 +1129,8 @@
       </div>
     </div>
     <audio id="audio"></audio>
-    <audio id="audioB"></audio>
+    <audio id="audioJukeboxA"></audio>
+    <audio id="audioJukeboxB"></audio>
   </footer>
 
   <section id="popoutPlayer" class="popout-player hidden">
@@ -1183,6 +1200,48 @@
           </div>
         </div>
         <div id="popQueue" class="pop-queue"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="popoutJukeboxPlayer" class="popout-player hidden">
+    <div class="pop-head">
+      <div id="jukePopCover" class="pop-cover"></div>
+      <div style="min-width:0;">
+        <div id="jukePopTitle" class="pop-title">Nothing playing</div>
+        <div id="jukePopSub" class="pop-sub">Start a Jukebox session.</div>
+        <div class="pop-controls">
+          <button class="btn" id="jukePopPrev">&#9198;</button>
+          <button class="btn primary" id="jukePopPlayPause">&#9654;</button>
+          <button class="btn" id="jukePopNext">&#9197;</button>
+          <button class="btn" id="jukePopMute">&#8857;</button>
+        </div>
+        <div class="pop-timeline">
+          <span id="jukePopElapsed" class="timecode">00:00</span>
+          <input id="jukePopSeek" type="range" min="0" max="1000" value="0" />
+          <span id="jukePopDuration" class="timecode">00:00</span>
+        </div>
+      </div>
+      <div class="pop-toolbar">
+        <span class="muted">Vol</span>
+        <input id="jukePopVolume" type="range" min="0" max="100" value="70" />
+        <button class="btn" id="jukePopClose">Close</button>
+      </div>
+    </div>
+    <div class="pop-body">
+      <div class="pop-panel">
+        <div class="pop-panel-head">
+          <span>Jukebox Queue</span>
+          <span class="muted" id="jukePopQueueMeta">No active session.</span>
+        </div>
+        <div id="jukePopQueue" class="pop-queue"></div>
+      </div>
+      <div class="pop-panel">
+        <div class="pop-panel-head">
+          <span>Why this track</span>
+          <span class="muted" id="jukePopMode">Jukebox</span>
+        </div>
+        <div id="jukePopReason" class="muted" style="padding:10px;">Start a session to begin.</div>
       </div>
     </div>
   </section>

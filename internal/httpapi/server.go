@@ -64,6 +64,7 @@ type Track struct {
 	Title        string  `json:"title"`
 	Artist       string  `json:"artist"`
 	Album        string  `json:"album"`
+	AlbumID      int64   `json:"album_id"`
 	Genre        string  `json:"genre"`
 	TrackNo      int     `json:"track_number"`
 	Rating       float64 `json:"rating"`
@@ -1598,7 +1599,7 @@ func (s *Server) listTracks(w http.ResponseWriter, r *http.Request) {
 	var err error
 	if isAdmin {
 		rows, err = s.db.Query(context.Background(), `
-			SELECT t.id::text, t.title, COALESCE(ar.name,''), COALESCE(al.title,''), COALESCE(t.genre,''), COALESCE(t.track_number,0), COALESCE(rr.avg_rating, 0), t.duration_seconds, t.visibility, t.owner_sub, COALESCE(NULLIF(up.display_name,''), t.owner_sub), (COALESCE(t.lyrics_srt,'') <> ''), (COALESCE(t.lyrics_txt,'') <> ''), t.created_at::text
+			SELECT t.id::text, t.title, COALESCE(ar.name,''), COALESCE(al.title,''), COALESCE(al.id,0), COALESCE(t.genre,''), COALESCE(t.track_number,0), COALESCE(rr.avg_rating, 0), t.duration_seconds, t.visibility, t.owner_sub, COALESCE(NULLIF(up.display_name,''), t.owner_sub), (COALESCE(t.lyrics_srt,'') <> ''), (COALESCE(t.lyrics_txt,'') <> ''), t.created_at::text
 			FROM tracks t
 			LEFT JOIN artists ar ON ar.id = t.artist_id
 			LEFT JOIN albums al ON al.id = t.album_id
@@ -1613,7 +1614,7 @@ func (s *Server) listTracks(w http.ResponseWriter, r *http.Request) {
 		`)
 	} else if hasClaims {
 		rows, err = s.db.Query(context.Background(), `
-			SELECT t.id::text, t.title, COALESCE(ar.name,''), COALESCE(al.title,''), COALESCE(t.genre,''), COALESCE(t.track_number,0), COALESCE(rr.avg_rating, 0), t.duration_seconds, t.visibility, t.owner_sub, COALESCE(NULLIF(up.display_name,''), t.owner_sub), (COALESCE(t.lyrics_srt,'') <> ''), (COALESCE(t.lyrics_txt,'') <> ''), t.created_at::text
+			SELECT t.id::text, t.title, COALESCE(ar.name,''), COALESCE(al.title,''), COALESCE(al.id,0), COALESCE(t.genre,''), COALESCE(t.track_number,0), COALESCE(rr.avg_rating, 0), t.duration_seconds, t.visibility, t.owner_sub, COALESCE(NULLIF(up.display_name,''), t.owner_sub), (COALESCE(t.lyrics_srt,'') <> ''), (COALESCE(t.lyrics_txt,'') <> ''), t.created_at::text
 			FROM tracks t
 			LEFT JOIN artists ar ON ar.id = t.artist_id
 			LEFT JOIN albums al ON al.id = t.album_id
@@ -1638,7 +1639,7 @@ func (s *Server) listTracks(w http.ResponseWriter, r *http.Request) {
 		`, claims.Subject)
 	} else {
 		rows, err = s.db.Query(context.Background(), `
-			SELECT t.id::text, t.title, COALESCE(ar.name,''), COALESCE(al.title,''), COALESCE(t.genre,''), COALESCE(t.track_number,0), COALESCE(rr.avg_rating, 0), t.duration_seconds, t.visibility, t.owner_sub, COALESCE(NULLIF(up.display_name,''), t.owner_sub), (COALESCE(t.lyrics_srt,'') <> ''), (COALESCE(t.lyrics_txt,'') <> ''), t.created_at::text
+			SELECT t.id::text, t.title, COALESCE(ar.name,''), COALESCE(al.title,''), COALESCE(al.id,0), COALESCE(t.genre,''), COALESCE(t.track_number,0), COALESCE(rr.avg_rating, 0), t.duration_seconds, t.visibility, t.owner_sub, COALESCE(NULLIF(up.display_name,''), t.owner_sub), (COALESCE(t.lyrics_srt,'') <> ''), (COALESCE(t.lyrics_txt,'') <> ''), t.created_at::text
 			FROM tracks t
 			LEFT JOIN artists ar ON ar.id = t.artist_id
 			LEFT JOIN albums al ON al.id = t.album_id
@@ -1662,7 +1663,7 @@ func (s *Server) listTracks(w http.ResponseWriter, r *http.Request) {
 	tracks := make([]Track, 0, 64)
 	for rows.Next() {
 		var t Track
-		if err := rows.Scan(&t.ID, &t.Title, &t.Artist, &t.Album, &t.Genre, &t.TrackNo, &t.Rating, &t.Duration, &t.Visibility, &t.OwnerSub, &t.Uploader, &t.HasLyricsSRT, &t.HasLyricsTXT, &t.Created); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Artist, &t.Album, &t.AlbumID, &t.Genre, &t.TrackNo, &t.Rating, &t.Duration, &t.Visibility, &t.OwnerSub, &t.Uploader, &t.HasLyricsSRT, &t.HasLyricsTXT, &t.Created); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

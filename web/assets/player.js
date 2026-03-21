@@ -1,5 +1,7 @@
 (function(ns) {
-const { state, $, ICON_PLAY, ICON_PAUSE, ICON_MUTE, ICON_UNMUTE, ICON_DETAIL, ICON_PLAYLIST, PLAYER_BRIDGE_CHANNEL, PLAYER_TICK_MS, headers, apiFetch, fmt } = ns;
+const { state, $, escapeHtml, ICON_PLAY, ICON_PAUSE, ICON_MUTE, ICON_UNMUTE, ICON_DETAIL, ICON_PLAYLIST, PLAYER_BRIDGE_CHANNEL, JUKEBOX_BRIDGE_CHANNEL, PLAYER_TICK_MS, headers, apiFetch, fmt, normText } = ns;
+const LAST_PLAYER_SNAPSHOT_KEY = 'hex_last_player_snapshot_v1';
+const LAST_JUKEBOX_SNAPSHOT_KEY = 'hex_last_jukebox_snapshot_v1';
 const finalizeListeningSession = (...args) => ns.finalizeListeningSession(...args);
 const beginListeningSession = (...args) => ns.beginListeningSession(...args);
 const renderPlaylistTracks = (...args) => ns.renderPlaylistTracks(...args);
@@ -11,29 +13,56 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       return $(id);
     }
 
+    function engineState(name = state.activeEngine || 'main') {
+      return name === 'jukebox' ? state.jukeboxPlayer : state.mainPlayer;
+    }
+
+    function syncLegacyPlayerMirror(name = state.activeEngine || 'main') {
+      const engine = engineState(name);
+      state.activeEngine = name;
+      state.queue = Array.isArray(engine.queue) ? engine.queue.slice() : [];
+      state.queueIndex = Number(engine.queueIndex || -1);
+      state.nowPlayingTrackId = String(engine.nowPlayingTrackId || '');
+      state.currentLyrics = engine.currentLyrics || { track_id: '', plain: '', srt: '', cues: [] };
+    }
+
+    function mainAudio() {
+      return $('audio');
+    }
+
+    function jukeboxActiveAudio() {
+      return audioById(state.jukeboxPlayer.activeAudioId || 'audioJukeboxA') || $('audioJukeboxA');
+    }
+
+    function jukeboxStandbyAudio() {
+      return audioById(state.jukeboxPlayer.standbyAudioId || 'audioJukeboxB') || $('audioJukeboxB');
+    }
+
     function activeAudio() {
-      return audioById(state.playerDeck?.activeAudioId || 'audio') || $('audio');
+      if ((state.activeEngine || 'main') === 'jukebox') return jukeboxActiveAudio();
+      return mainAudio();
     }
 
     function standbyAudio() {
-      return audioById(state.playerDeck?.standbyAudioId || 'audioB') || $('audioB');
+      if ((state.activeEngine || 'main') === 'jukebox') return jukeboxStandbyAudio();
+      return null;
     }
 
-    function swapAudioDecks() {
-      const currentActive = state.playerDeck.activeAudioId || 'audio';
-      state.playerDeck.activeAudioId = state.playerDeck.standbyAudioId || 'audioB';
-      state.playerDeck.standbyAudioId = currentActive;
+    function swapJukeboxDecks() {
+      const currentActive = state.jukeboxPlayer.activeAudioId || 'audioJukeboxA';
+      state.jukeboxPlayer.activeAudioId = state.jukeboxPlayer.standbyAudioId || 'audioJukeboxB';
+      state.jukeboxPlayer.standbyAudioId = currentActive;
     }
 
-    function syncDeckVolumes() {
+    function syncJukeboxDeckVolumes() {
       const fx = state.audioFX;
-      const active = activeAudio();
-      const standby = standbyAudio();
+      const active = jukeboxActiveAudio();
+      const standby = jukeboxStandbyAudio();
       if (!active || !standby) return;
       if (fx && fx.gainA && fx.gainB) {
-        const gainActive = state.playerDeck.activeAudioId === 'audio' ? fx.gainA : fx.gainB;
-        const gainStandby = state.playerDeck.activeAudioId === 'audio' ? fx.gainB : fx.gainA;
-        if (!state.playerDeck.crossfading) {
+        const gainActive = state.jukeboxPlayer.activeAudioId === 'audioJukeboxA' ? fx.gainA : fx.gainB;
+        const gainStandby = state.jukeboxPlayer.activeAudioId === 'audioJukeboxA' ? fx.gainB : fx.gainA;
+        if (!state.jukeboxPlayer.crossfading) {
           gainActive.gain.value = active.muted ? 0 : 1;
           gainStandby.gain.value = 0;
         }
@@ -41,19 +70,39 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     function isJukeboxPlayback() {
-      const ctx = String(state.playerDeck?.currentSourceContext || '');
-      return ctx.startsWith('jukebox');
+      const audio = jukeboxActiveAudio();
+      return !!(audio && audio.src);
     }
 
-    function stopCrossfade() {
-      if (state.playerDeck?.crossfadeTimer) {
-        window.clearInterval(state.playerDeck.crossfadeTimer);
-        state.playerDeck.crossfadeTimer = null;
+    function stopJukeboxCrossfade() {
+      if (state.jukeboxPlayer?.crossfadeTimer) {
+        window.clearInterval(state.jukeboxPlayer.crossfadeTimer);
+        state.jukeboxPlayer.crossfadeTimer = null;
       }
-      state.playerDeck.crossfading = false;
-      state.playerDeck.crossfadeTrackId = '';
-      state.playerDeck.crossfadeTargetIndex = -1;
-      syncDeckVolumes();
+      state.jukeboxPlayer.crossfading = false;
+      state.jukeboxPlayer.crossfadeTrackId = '';
+      state.jukeboxPlayer.crossfadeTargetIndex = -1;
+      syncJukeboxDeckVolumes();
+    }
+
+    function stopMainPlayback() {
+      const audio = mainAudio();
+      if (!audio) return;
+      try { audio.pause(); } catch (_) {}
+      audio.currentTime = 0;
+      audio.src = '';
+    }
+
+    function stopJukeboxPlayback() {
+      [jukeboxActiveAudio(), jukeboxStandbyAudio()].forEach((audio) => {
+        if (!audio) return;
+        try { audio.pause(); } catch (_) {}
+        audio.currentTime = 0;
+        audio.src = '';
+      });
+      stopJukeboxCrossfade();
+      state.jukeboxPlayer.activeAudioId = 'audioJukeboxA';
+      state.jukeboxPlayer.standbyAudioId = 'audioJukeboxB';
     }
 
     function isPopoutPlayerMode() {
@@ -61,11 +110,20 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       return (u.searchParams.get('popout_player') || '') === '1' || String(window.location.hash || '').replace(/^#/, '') === 'player_popout';
     }
 
+    function isJukeboxPopoutMode() {
+      const u = new URL(window.location.href);
+      return (u.searchParams.get('popout_jukebox') || '') === '1' || String(window.location.hash || '').replace(/^#/, '') === 'jukebox_popout';
+    }
+
     function applyPopoutPlayerMode() {
-      document.body.classList.toggle('popout-player', !!state.popoutMode);
+      const anyPopout = !!state.popoutMode || !!state.jukeboxPopoutMode;
+      document.body.classList.toggle('popout-player', anyPopout);
       $('popoutPlayer').classList.toggle('hidden', !state.popoutMode);
+      $('popoutJukeboxPlayer').classList.toggle('hidden', !state.jukeboxPopoutMode);
       if (state.popoutMode) {
         document.title = 'HEXSONIC Popout Player';
+      } else if (state.jukeboxPopoutMode) {
+        document.title = 'HEXSONIC Jukebox Popout';
       }
     }
 
@@ -106,8 +164,19 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     function currentTrackFromQueue() {
-      if (state.queueIndex < 0 || !state.queue[state.queueIndex]) return null;
-      return state.queue[state.queueIndex];
+      const engine = state.mainPlayer;
+      if (engine.queueIndex < 0 || !engine.queue[engine.queueIndex]) return null;
+      return engine.queue[engine.queueIndex];
+    }
+
+    function currentTrackMeta() {
+      return state.currentTrackMeta || currentTrackFromQueue();
+    }
+
+    function currentJukeboxTrackFromQueue() {
+      const engine = state.jukeboxPlayer;
+      if (engine.queueIndex < 0 || !engine.queue[engine.queueIndex]) return null;
+      return engine.queue[engine.queueIndex];
     }
 
     function normTrackID(v) {
@@ -137,10 +206,12 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     function buildPlayerSnapshot() {
-      const audio = activeAudio();
-      const track = currentTrackFromQueue();
+      const audio = mainAudio();
+      const engine = state.mainPlayer;
+      const track = currentTrackMeta();
       return {
         at: Date.now(),
+        engine: 'main',
         track: track ? {
           id: track.id,
           title: track.title || 'Untitled',
@@ -148,39 +219,95 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
           album: track.album || '-',
           uploader_name: track.uploader_name || track.owner_sub || '-'
         } : null,
-        queue: state.queue.map((q) => ({
+        queue: engine.queue.map((q) => ({
           id: q.id,
           title: q.title || 'Untitled',
           artist: q.artist || '-',
           album: q.album || '-'
         })),
-        queue_index: state.queueIndex,
+        queue_index: engine.queueIndex,
         paused: audio.paused,
         muted: audio.muted,
         volume: Math.round((audio.volume || 0) * 100),
         current_time: Number(audio.currentTime || 0),
         duration: Number(audio.duration || 0),
-        cover_url: track ? (coverURLForTrack(track) || '') : '',
+        cover_url: track ? (state.currentCoverURL || coverURLForTrack(track) || '') : '',
         eq: $('eqPreset').value || 'flat',
         lyrics: {
-          track_id: state.currentLyrics.track_id || '',
-          plain: state.currentLyrics.plain || '',
-          cues: Array.isArray(state.currentLyrics.cues) ? state.currentLyrics.cues : []
+          track_id: engine.currentLyrics?.track_id || '',
+          plain: engine.currentLyrics?.plain || '',
+          cues: Array.isArray(engine.currentLyrics?.cues) ? engine.currentLyrics.cues : []
         },
         bins: visualizerBins()
       };
     }
 
+    function buildJukeboxSnapshot() {
+      const audio = jukeboxActiveAudio();
+      const engine = state.jukeboxPlayer;
+      const track = currentJukeboxTrackFromQueue();
+      return {
+        at: Date.now(),
+        engine: 'jukebox',
+        mode: state.jukebox.mode || 'for_you',
+        track: track ? {
+          id: track.id,
+          title: track.title || 'Untitled',
+          artist: track.artist || '-',
+          album: track.album || '-',
+          uploader_name: track.uploader_name || track.owner_sub || '-',
+          reason: track.reason || ''
+        } : null,
+        queue: engine.queue.map((q) => ({
+          id: q.id,
+          title: q.title || 'Untitled',
+          artist: q.artist || '-',
+          album: q.album || '-',
+          reason: q.reason || ''
+        })),
+        queue_index: engine.queueIndex,
+        paused: !!audio.paused,
+        muted: !!audio.muted,
+        volume: Math.round((audio.volume || 0) * 100),
+        current_time: Number(audio.currentTime || 0),
+        duration: Number(audio.duration || 0),
+        cover_url: state.jukeboxCurrentCoverURL || '',
+        lyrics: {
+          track_id: engine.currentLyrics?.track_id || '',
+          plain: engine.currentLyrics?.plain || '',
+          cues: Array.isArray(engine.currentLyrics?.cues) ? engine.currentLyrics.cues : []
+        },
+        bins: visualizerBins()
+      };
+    }
+
+    function cachePlayerSnapshot(snapshot = null) {
+      const payload = snapshot || buildPlayerSnapshot();
+      try {
+        localStorage.setItem(LAST_PLAYER_SNAPSHOT_KEY, JSON.stringify(payload));
+      } catch (_) {}
+      return payload;
+    }
+
+    function cacheJukeboxSnapshot(snapshot = null) {
+      const payload = snapshot || buildJukeboxSnapshot();
+      try {
+        localStorage.setItem(LAST_JUKEBOX_SNAPSHOT_KEY, JSON.stringify(payload));
+      } catch (_) {}
+      return payload;
+    }
+
     function emitPlayerState(force = false) {
-      if (!state.playerBridge) return;
       const now = Date.now();
       if (!force && now - state.lastBridgeStateAt < 120) return;
       state.lastBridgeStateAt = now;
-      state.playerBridge.postMessage({ type: 'player_state', payload: buildPlayerSnapshot() });
+      const snapshot = cachePlayerSnapshot();
+      if (!state.playerBridge) return;
+      state.playerBridge.postMessage({ type: 'player_state', payload: snapshot });
     }
 
     function buildPlayerTick() {
-      const audio = activeAudio();
+      const audio = mainAudio();
       return {
         at: Date.now(),
         current_time: Number(audio.currentTime || 0),
@@ -197,17 +324,47 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       state.playerBridge.postMessage({ type: 'player_tick', payload: buildPlayerTick() });
     }
 
+    function buildJukeboxTick() {
+      const audio = jukeboxActiveAudio();
+      return {
+        at: Date.now(),
+        current_time: Number(audio.currentTime || 0),
+        duration: Number(audio.duration || 0),
+        paused: !!audio.paused,
+        muted: !!audio.muted,
+        volume: Math.round((audio.volume || 0) * 100),
+        bins: visualizerBins()
+      };
+    }
+
+    function emitJukeboxState(force = false) {
+      const snapshot = cacheJukeboxSnapshot();
+      if (!state.jukeboxBridge) return;
+      state.jukeboxBridge.postMessage({ type: 'jukebox_state', payload: snapshot, force: !!force });
+    }
+
+    function emitJukeboxTick() {
+      if (!state.jukeboxBridge || state.jukeboxPopoutMode) return;
+      state.jukeboxBridge.postMessage({ type: 'jukebox_tick', payload: buildJukeboxTick() });
+    }
+
     function startBridgeTicker() {
       if (state.bridgeTickTimer || state.popoutMode) return;
       state.bridgeTickTimer = window.setInterval(() => {
-        const a = $('audio');
+        const a = mainAudio();
         if (!a || !a.src) return;
         emitPlayerTick();
+        const now = Date.now();
+        if (!state.lastFullBridgeStateAt || (now - state.lastFullBridgeStateAt) >= 1000) {
+          state.lastFullBridgeStateAt = now;
+          emitPlayerState(true);
+        }
       }, PLAYER_TICK_MS);
     }
 
     async function applyPlayerControl(action, value) {
-      const audio = activeAudio();
+      const audio = mainAudio();
+      const engine = state.mainPlayer;
       if (action === 'play_pause') {
         if (!audio.src) return;
         if (audio.paused) {
@@ -222,15 +379,17 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         return;
       }
       if (action === 'prev') {
-        if (!state.queue.length) return;
-        state.queueIndex = (state.queueIndex - 1 + state.queue.length) % state.queue.length;
-        await startTrackById(state.queue[state.queueIndex].id, state.queue);
+        if (!engine.queue.length) return;
+        engine.queueIndex = (engine.queueIndex - 1 + engine.queue.length) % engine.queue.length;
+        syncLegacyPlayerMirror('main');
+        await startTrackById(engine.queue[engine.queueIndex].id, engine.queue);
         return;
       }
       if (action === 'next') {
-        if (!state.queue.length) return;
-        state.queueIndex = (state.queueIndex + 1) % state.queue.length;
-        await startTrackById(state.queue[state.queueIndex].id, state.queue);
+        if (!engine.queue.length) return;
+        engine.queueIndex = (engine.queueIndex + 1) % engine.queue.length;
+        syncLegacyPlayerMirror('main');
+        await startTrackById(engine.queue[engine.queueIndex].id, engine.queue);
         return;
       }
       if (action === 'seek') {
@@ -243,15 +402,12 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       if (action === 'volume') {
         const v = Math.max(0, Math.min(100, Number(value || 0)));
         audio.volume = v / 100;
-        standbyAudio().volume = audio.volume;
         $('volumeRange').value = String(v);
         emitPlayerState(true);
         return;
       }
       if (action === 'mute_toggle') {
         audio.muted = !audio.muted;
-        standbyAudio().muted = audio.muted;
-        syncDeckVolumes();
         updatePlayerButtons();
         emitPlayerState(true);
         return;
@@ -265,9 +421,10 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       }
       if (action === 'jump_queue_index') {
         const idx = Number(value);
-        if (!Number.isFinite(idx) || idx < 0 || idx >= state.queue.length) return;
-        state.queueIndex = idx;
-        await startTrackById(state.queue[state.queueIndex].id, state.queue);
+        if (!Number.isFinite(idx) || idx < 0 || idx >= engine.queue.length) return;
+        engine.queueIndex = idx;
+        syncLegacyPlayerMirror('main');
+        await startTrackById(engine.queue[engine.queueIndex].id, engine.queue);
       }
     }
 
@@ -282,6 +439,19 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       }
       state.popoutWindow = w;
       emitPlayerState(true);
+    }
+
+    function openJukeboxPopout() {
+      const u = new URL(window.location.href);
+      u.searchParams.set('popout_jukebox', '1');
+      u.hash = 'jukebox_popout';
+      const w = window.open(u.toString(), 'hexsonic_jukebox_popout', 'width=1280,height=880,resizable=yes,scrollbars=no');
+      if (!w) {
+        alert('Popup blocked. Please allow popups for this site.');
+        return;
+      }
+      cacheJukeboxSnapshot();
+      emitJukeboxState(true);
     }
 
     function lyricActiveIndex(cues, nowMs) {
@@ -566,8 +736,8 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         row.className = `pop-q-item ${queueIndex === idx ? 'active' : ''}`;
         row.innerHTML = `
           <div>
-            <div class="pop-q-title">${esc(item.title || '-')}</div>
-            <div class="pop-q-meta">${esc(item.artist || '-')} · ${esc(item.album || '-')}</div>
+            <div class="pop-q-title">${escapeHtml(item.title || '-')}</div>
+            <div class="pop-q-meta">${escapeHtml(item.artist || '-')} · ${escapeHtml(item.album || '-')}</div>
           </div>
         `;
         row.onclick = () => {
@@ -586,6 +756,10 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       if (!state.popoutMode) return;
       state.popoutSnapshot = snapshot || {};
       const t = snapshot && snapshot.track ? snapshot.track : null;
+      if (t && state.popoutSyncTimer) {
+        window.clearInterval(state.popoutSyncTimer);
+        state.popoutSyncTimer = null;
+      }
       $('popTitle').textContent = t ? (t.title || 'Untitled') : 'Nothing playing';
       $('popSub').textContent = t ? `${t.artist || '-'} · ${t.album || '-'} · by ${t.uploader_name || '-'}` : 'Waiting for player data...';
       if (snapshot && snapshot.cover_url) {
@@ -625,9 +799,135 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       renderPopoutVisualizer(Array.isArray(t.bins) ? t.bins : [], state.popoutSnapshot || {}, state.popoutSnapshot.current_time);
     }
 
+    function renderJukeboxPopoutQueue(snapshot) {
+      const root = $('jukePopQueue');
+      if (!root) return;
+      const q = Array.isArray(snapshot?.queue) ? snapshot.queue : [];
+      const idx = Number(snapshot?.queue_index || -1);
+      root.innerHTML = '';
+      const upcoming = q.filter((_, i) => i > idx);
+      if (!upcoming.length) {
+        root.innerHTML = '<div class="muted" style="padding:10px;">Queue empty.</div>';
+        return;
+      }
+      upcoming.forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'pop-q-item';
+        row.innerHTML = `
+          <div>
+            <div class="pop-q-title">${escapeHtml(item.title || '-')}</div>
+            <div class="pop-q-meta">${escapeHtml(item.artist || '-')} · ${escapeHtml(item.album || '-')}</div>
+          </div>
+        `;
+        root.appendChild(row);
+      });
+    }
+
+    function renderJukeboxPopoutSnapshot(snapshot) {
+      if (!state.jukeboxPopoutMode) return;
+      state.jukeboxPopoutSnapshot = snapshot || {};
+      const t = snapshot?.track || null;
+      $('jukePopTitle').textContent = t ? (t.title || 'Untitled') : 'Nothing playing';
+      $('jukePopSub').textContent = t ? `${t.artist || '-'} · ${t.album || '-'} · by ${t.uploader_name || '-'}` : 'Start a Jukebox session.';
+      $('jukePopReason').textContent = t ? (t.reason || 'Adaptive radio selection.') : 'Start a Jukebox session to begin.';
+      $('jukePopMode').textContent = snapshot?.mode ? String(snapshot.mode).replaceAll('_', ' ') : 'Jukebox';
+      if (snapshot?.cover_url) {
+        $('jukePopCover').style.backgroundImage = `linear-gradient(180deg, rgba(0,0,0,.1), rgba(0,0,0,.45)), url('${snapshot.cover_url}')`;
+      } else {
+        $('jukePopCover').style.backgroundImage = 'linear-gradient(135deg, #2d3e5a, #5c79a6)';
+      }
+      $('jukePopElapsed').textContent = fmt(Number(snapshot?.current_time || 0));
+      $('jukePopDuration').textContent = fmt(Number(snapshot?.duration || 0));
+      const d = Number(snapshot?.duration || 0);
+      const p = d > 0 ? Number(snapshot?.current_time || 0) / d : 0;
+      $('jukePopSeek').value = String(Math.max(0, Math.min(1000, Math.round(p * 1000))));
+      $('jukePopVolume').value = String(Math.max(0, Math.min(100, Number(snapshot?.volume || 0))));
+      $('jukePopPlayPause').textContent = snapshot?.paused ? ICON_PLAY : ICON_PAUSE;
+      $('jukePopMute').textContent = snapshot?.muted ? ICON_MUTE : ICON_UNMUTE;
+      renderJukeboxPopoutQueue(snapshot || {});
+    }
+
+    function applyJukeboxPopoutTick(tick) {
+      if (!state.jukeboxPopoutMode || !state.jukeboxPopoutSnapshot) return;
+      const t = tick || {};
+      state.jukeboxPopoutSnapshot.current_time = Number(t.current_time || 0);
+      state.jukeboxPopoutSnapshot.duration = Number(t.duration || 0);
+      state.jukeboxPopoutSnapshot.paused = !!t.paused;
+      state.jukeboxPopoutSnapshot.muted = !!t.muted;
+      state.jukeboxPopoutSnapshot.volume = Math.max(0, Math.min(100, Number(t.volume || 0)));
+      $('jukePopElapsed').textContent = fmt(state.jukeboxPopoutSnapshot.current_time);
+      $('jukePopDuration').textContent = fmt(state.jukeboxPopoutSnapshot.duration);
+      const d = Number(state.jukeboxPopoutSnapshot.duration || 0);
+      const p = d > 0 ? state.jukeboxPopoutSnapshot.current_time / d : 0;
+      $('jukePopSeek').value = String(Math.max(0, Math.min(1000, Math.round(p * 1000))));
+      $('jukePopVolume').value = String(state.jukeboxPopoutSnapshot.volume);
+      $('jukePopPlayPause').textContent = state.jukeboxPopoutSnapshot.paused ? ICON_PLAY : ICON_PAUSE;
+      $('jukePopMute').textContent = state.jukeboxPopoutSnapshot.muted ? ICON_MUTE : ICON_UNMUTE;
+    }
+
+    function requestPopoutStateSync() {
+      if (!state.popoutMode || !state.playerBridge) return;
+      const parsed = readCachedPlayerSnapshot();
+      if (parsed && parsed.track && parsed.track.id) {
+        renderPopoutSnapshot(parsed);
+      }
+      state.playerBridge.postMessage({ type: 'player_ready' });
+    }
+
+    function readCachedJukeboxSnapshot() {
+      try {
+        const cached = localStorage.getItem(LAST_JUKEBOX_SNAPSHOT_KEY);
+        if (!cached) return null;
+        const parsed = JSON.parse(cached);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function requestJukeboxPopoutStateSync() {
+      const parsed = readCachedJukeboxSnapshot();
+      if (parsed) renderJukeboxPopoutSnapshot(parsed);
+      if (state.jukeboxBridge) state.jukeboxBridge.postMessage({ type: 'jukebox_ready' });
+    }
+
+    function readCachedPlayerSnapshot() {
+      try {
+        const cached = localStorage.getItem(LAST_PLAYER_SNAPSHOT_KEY);
+        if (!cached) return null;
+        const parsed = JSON.parse(cached);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function startPopoutSnapshotPolling() {
+      if (!state.popoutMode) return;
+      const syncFromCache = () => {
+        const parsed = readCachedPlayerSnapshot();
+        if (!parsed) return;
+        renderPopoutSnapshot(parsed);
+      };
+      syncFromCache();
+      window.addEventListener('storage', (ev) => {
+        if (ev.key !== LAST_PLAYER_SNAPSHOT_KEY) return;
+        syncFromCache();
+      });
+      if (!state.popoutSyncTimer) {
+        state.popoutSyncTimer = window.setInterval(() => {
+          syncFromCache();
+          if (state.playerBridge) state.playerBridge.postMessage({ type: 'player_ready' });
+        }, 1000);
+      }
+    }
+
     function initPlayerBridge() {
       if (state.playerBridge) return;
-      if (typeof BroadcastChannel !== 'function') return;
+      if (typeof BroadcastChannel !== 'function') {
+        if (state.popoutMode) startPopoutSnapshotPolling();
+        return;
+      }
       state.playerBridge = new BroadcastChannel(PLAYER_BRIDGE_CHANNEL);
       state.playerBridge.onmessage = async (ev) => {
         const msg = ev && ev.data ? ev.data : {};
@@ -653,9 +953,44 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         }
       };
       if (state.popoutMode) {
-        state.playerBridge.postMessage({ type: 'player_ready' });
+        const parsed = readCachedPlayerSnapshot();
+        if (parsed) renderPopoutSnapshot(parsed);
+        requestPopoutStateSync();
+        startPopoutSnapshotPolling();
       } else {
         state.playerBridge.postMessage({ type: 'player_ping' });
+      }
+    }
+
+    function initJukeboxBridge() {
+      if (state.jukeboxBridge) return;
+      if (typeof BroadcastChannel !== 'function') return;
+      state.jukeboxBridge = new BroadcastChannel(JUKEBOX_BRIDGE_CHANNEL);
+      state.jukeboxBridge.onmessage = async (ev) => {
+        const msg = ev?.data || {};
+        const type = String(msg.type || '');
+        if (state.jukeboxPopoutMode) {
+          if (type === 'jukebox_state') renderJukeboxPopoutSnapshot(msg.payload || {});
+          if (type === 'jukebox_tick') applyJukeboxPopoutTick(msg.payload || {});
+          return;
+        }
+        if (type === 'jukebox_ready') {
+          emitJukeboxState(true);
+          return;
+        }
+        if (type === 'jukebox_control' && typeof ns.applyJukeboxControl === 'function') {
+          await ns.applyJukeboxControl(msg.action, msg.value);
+        }
+      };
+      if (state.jukeboxPopoutMode) {
+        const parsed = readCachedJukeboxSnapshot();
+        if (parsed) renderJukeboxPopoutSnapshot(parsed);
+        requestJukeboxPopoutStateSync();
+        if (!state.jukeboxPopoutSyncTimer) {
+          state.jukeboxPopoutSyncTimer = window.setInterval(() => {
+            requestJukeboxPopoutStateSync();
+          }, 1000);
+        }
       }
     }
 
@@ -731,6 +1066,16 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       $('popLyricAutoScroll').checked = !!state.popLyricAutoScroll;
       $('popQueueFollowCurrent').checked = !!state.popQueueFollowCurrent;
       state.popLyricFontPx = Math.max(11, Math.min(22, Number(state.popLyricFontPx || 13)));
+    }
+
+    function bindJukeboxPopoutEvents() {
+      $('jukePopClose').onclick = () => window.close();
+      $('jukePopPlayPause').onclick = () => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'play_pause' });
+      $('jukePopPrev').onclick = () => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'prev' });
+      $('jukePopNext').onclick = () => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'next' });
+      $('jukePopMute').onclick = () => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'mute_toggle' });
+      $('jukePopSeek').oninput = (e) => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'seek', value: Number(e.target.value) / 1000 });
+      $('jukePopVolume').oninput = (e) => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'volume', value: Number(e.target.value) });
     }
 
     function syncRoleUI() {
@@ -815,7 +1160,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     function setPlayerThumb(url = '') {
-      const thumb = document.querySelector('.thumb');
+      const thumb = $('playerThumb');
       if (!thumb) return;
       if (url) {
         thumb.style.backgroundImage = `linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.38)), url('${url}')`;
@@ -870,55 +1215,141 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       return url;
     }
 
-    async function updateNowPlayingVisuals(track) {
-      if (!track) {
-        $('npTitle').textContent = 'Nothing playing';
-        $('npSub').textContent = 'Select a track and hit play';
-        setPlayerThumb('');
-        state.currentLyrics = { track_id: '', plain: '', srt: '', cues: [] };
-        return;
-      }
-      $('npTitle').textContent = track.title || 'Untitled';
-      $('npSub').textContent = `${track.artist || '-'} · ${track.album || '-'}`;
+    async function resolveTrackCoverURL(track) {
       const album = findAlbumForTrack(track);
       let url = coverURLForTrack(track);
       if (!url) {
         url = await ensureCoverURLForAlbum(album);
       }
+      if (!url) {
+        const albumID = Number(track.album_id || track.albumID || 0);
+        if (albumID > 0) {
+          if (state.token) {
+            const signRes = await apiFetch(`/api/v1/albums/${albumID}/cover-sign`, {
+              method: 'POST',
+              headers: headers()
+            });
+            if (signRes.ok) {
+              const sj = await signRes.json();
+              if (sj && sj.url) url = `${sj.url}&v=${Date.now()}`;
+            }
+          }
+          if (!url) {
+            url = `/api/v1/albums/${albumID}/cover?v=${Date.now()}`;
+          }
+        }
+      }
+      if (!url && track && track.id) {
+        try {
+          const detailRes = await apiFetch(`/api/v1/tracks/${encodeURIComponent(track.id)}`, { headers: headers() }, false);
+          if (detailRes.ok) {
+            const detail = await detailRes.json();
+            if (detail && typeof detail === 'object') {
+              if (!track.album && detail.album) track.album = detail.album;
+              if (!track.artist && detail.artist) track.artist = detail.artist;
+              if (!track.uploader_name && detail.uploader_name) track.uploader_name = detail.uploader_name;
+            }
+            const detailAlbumID = Number(detail.album_id || 0);
+            if (detailAlbumID > 0) {
+              track.album_id = detailAlbumID;
+            }
+            if (!url) {
+              const retryAlbum = findAlbumForTrack(track);
+              if (retryAlbum) {
+                url = state.albumCoverURLs[retryAlbum.id] || '';
+                if (!url) {
+                  url = await ensureCoverURLForAlbum(retryAlbum);
+                }
+              }
+            }
+            if (!url && detailAlbumID > 0) {
+              if (state.token) {
+                const signRes = await apiFetch(`/api/v1/albums/${detailAlbumID}/cover-sign`, {
+                  method: 'POST',
+                  headers: headers()
+                });
+                if (signRes.ok) {
+                  const sj = await signRes.json();
+                  if (sj && sj.url) url = `${sj.url}&v=${Date.now()}`;
+                }
+              }
+              if (!url) {
+                url = `/api/v1/albums/${detailAlbumID}/cover?v=${Date.now()}`;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+      return url || '';
+    }
+
+    async function updateNowPlayingVisuals(track) {
+      if (!track) {
+        $('npTitle').textContent = 'Nothing playing';
+        $('npSub').textContent = 'Select a track and hit play';
+        state.currentTrackMeta = null;
+        state.currentCoverURL = '';
+        setPlayerThumb('');
+        const engine = engineState(state.activeEngine || 'main');
+        engine.currentLyrics = { track_id: '', plain: '', srt: '', cues: [] };
+        syncLegacyPlayerMirror(state.activeEngine || 'main');
+        return;
+      }
+      state.currentTrackMeta = {
+        id: track.id,
+        title: track.title || 'Untitled',
+        artist: track.artist || '-',
+        album: track.album || '-',
+        album_id: Number(track.album_id || track.albumID || 0),
+        uploader_name: track.uploader_name || track.owner_sub || '-'
+      };
+      $('npTitle').textContent = track.title || 'Untitled';
+      $('npSub').textContent = `${track.artist || '-'} · ${track.album || '-'}`;
+      const url = await resolveTrackCoverURL(track);
+      state.currentCoverURL = url || '';
       setPlayerThumb(url);
+      cachePlayerSnapshot();
     }
 
     async function loadTrackLyrics(trackID) {
+      const engine = engineState(state.activeEngine || 'main');
       if (!trackID) {
-        state.currentLyrics = { track_id: '', plain: '', srt: '', cues: [] };
+        engine.currentLyrics = { track_id: '', plain: '', srt: '', cues: [] };
+        syncLegacyPlayerMirror(state.activeEngine || 'main');
         return;
       }
       const res = await apiFetch(`/api/v1/tracks/${encodeURIComponent(trackID)}`, { headers: headers() }, false);
       if (!res.ok) {
-        state.currentLyrics = { track_id: trackID, plain: '', srt: '', cues: [] };
+        engine.currentLyrics = { track_id: trackID, plain: '', srt: '', cues: [] };
+        syncLegacyPlayerMirror(state.activeEngine || 'main');
         return;
       }
       const json = await res.json();
       const srt = String(json.lyrics_srt || '').trim();
-      state.currentLyrics = {
+      engine.currentLyrics = {
         track_id: trackID,
         plain: String(json.lyrics_txt || ''),
         srt,
         cues: parseSRTLyrics(srt)
       };
+      syncLegacyPlayerMirror(state.activeEngine || 'main');
     }
 
     function ensureAudioFX() {
       if (state.audioFX) return state.audioFX;
-      const audioA = $('audio');
-      const audioB = $('audioB');
+      const audioMain = $('audio');
+      const audioA = $('audioJukeboxA');
+      const audioB = $('audioJukeboxB');
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return null;
       const ctx = new Ctx();
+      const sourceMain = ctx.createMediaElementSource(audioMain);
       const sourceA = ctx.createMediaElementSource(audioA);
       const sourceB = ctx.createMediaElementSource(audioB);
+      const gainMain = ctx.createGain();
       const gainA = ctx.createGain();
       const gainB = ctx.createGain();
+      gainMain.gain.value = 1;
       gainA.gain.value = 1;
       gainB.gain.value = 0;
       const freqs = [60, 170, 350, 1000, 3500, 10000];
@@ -932,8 +1363,10 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         else biquad.type = 'peaking';
         return biquad;
       });
+      sourceMain.connect(gainMain);
       sourceA.connect(gainA);
       sourceB.connect(gainB);
+      gainMain.connect(filters[0]);
       gainA.connect(filters[0]);
       gainB.connect(filters[0]);
       for (let i = 0; i < filters.length - 1; i++) {
@@ -944,7 +1377,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       analyser.smoothingTimeConstant = 0.82;
       filters[filters.length - 1].connect(analyser);
       analyser.connect(ctx.destination);
-      state.audioFX = { ctx, sourceA, sourceB, gainA, gainB, filters, analyser };
+      state.audioFX = { ctx, sourceMain, sourceA, sourceB, gainMain, gainA, gainB, filters, analyser };
       return state.audioFX;
     }
 
@@ -1012,35 +1445,35 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
 
     async function maybeScheduleJukeboxCrossfade() {
       if (!isJukeboxPlayback()) return;
-      if (state.playerDeck.crossfading) return;
+      if (state.jukeboxPlayer.crossfading) return;
       const audio = activeAudio();
       if (!audio || !audio.src || audio.paused) return;
-      const idx = Number(state.queueIndex || 0);
+      const idx = Number(state.jukeboxPlayer.queueIndex || 0);
       const nextIndex = idx + 1;
-      const nextTrack = state.queue[nextIndex];
+      const nextTrack = state.jukeboxPlayer.queue[nextIndex];
       if (!nextTrack || !nextTrack.id) return;
       const duration = Number(audio.duration || 0);
       const currentTime = Number(audio.currentTime || 0);
       if (!Number.isFinite(duration) || duration <= 0) return;
       const remaining = duration - currentTime;
-      const crossfadeSeconds = Math.max(2, Number(state.playerDeck.crossfadeSeconds || 5));
+      const crossfadeSeconds = Math.max(2, Number(state.jukeboxPlayer.crossfadeSeconds || 5));
       if (remaining > crossfadeSeconds) return;
-      const trackKey = `${state.nowPlayingTrackId}:${nextTrack.id}`;
-      if (state.playerDeck.crossfadeTrackId === trackKey) return;
-      state.playerDeck.crossfadeTrackId = trackKey;
-      state.playerDeck.crossfadeTargetIndex = nextIndex;
+      const trackKey = `${state.jukeboxPlayer.nowPlayingTrackId}:${nextTrack.id}`;
+      if (state.jukeboxPlayer.crossfadeTrackId === trackKey) return;
+      state.jukeboxPlayer.crossfadeTrackId = trackKey;
+      state.jukeboxPlayer.crossfadeTargetIndex = nextIndex;
       await startJukeboxCrossfade(nextIndex);
     }
 
     async function startJukeboxCrossfade(nextIndex) {
-      if (state.playerDeck.crossfading) return;
-      const current = activeAudio();
-      const standby = standbyAudio();
-      const nextTrack = state.queue[nextIndex];
+      if (state.jukeboxPlayer.crossfading) return;
+      const current = jukeboxActiveAudio();
+      const standby = jukeboxStandbyAudio();
+      const nextTrack = state.jukeboxPlayer.queue[nextIndex];
       if (!current || !standby || !nextTrack) return;
       const signed = await ensureSignedStream(nextTrack.id, 'mp3');
       if (!signed) return;
-      state.playerDeck.crossfading = true;
+      state.jukeboxPlayer.crossfading = true;
       standby.pause();
       standby.src = `/api/v1/stream/${nextTrack.id}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
       standby.preload = 'auto';
@@ -1050,27 +1483,27 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       await resumeAudioContextIfNeeded();
       const fx = ensureAudioFX();
       if (fx && fx.gainA && fx.gainB) {
-        const activeGain = state.playerDeck.activeAudioId === 'audio' ? fx.gainA : fx.gainB;
-        const standbyGain = state.playerDeck.activeAudioId === 'audio' ? fx.gainB : fx.gainA;
+        const activeGain = state.jukeboxPlayer.activeAudioId === 'audioJukeboxA' ? fx.gainA : fx.gainB;
+        const standbyGain = state.jukeboxPlayer.activeAudioId === 'audioJukeboxA' ? fx.gainB : fx.gainA;
         activeGain.gain.value = current.muted ? 0 : 1;
         standbyGain.gain.value = 0;
       }
       try {
         await standby.play();
       } catch (_) {
-        stopCrossfade();
+        stopJukeboxCrossfade();
         return;
       }
-      const fadeMs = Math.max(2000, Number(state.playerDeck.crossfadeSeconds || 5) * 1000);
+      const fadeMs = Math.max(2000, Number(state.jukeboxPlayer.crossfadeSeconds || 5) * 1000);
       const startedAt = Date.now();
-      const previousTrack = state.queue[state.queueIndex] || null;
-      const sourceContext = String(state.playerDeck.currentSourceContext || '');
-      state.playerDeck.crossfadeTimer = window.setInterval(async () => {
+      const previousTrack = state.jukeboxPlayer.queue[state.jukeboxPlayer.queueIndex] || null;
+      const sourceContext = 'jukebox';
+      state.jukeboxPlayer.crossfadeTimer = window.setInterval(async () => {
         const elapsed = Date.now() - startedAt;
         const ratio = Math.max(0, Math.min(1, elapsed / fadeMs));
         if (fx && fx.gainA && fx.gainB) {
-          const activeGain = state.playerDeck.activeAudioId === 'audio' ? fx.gainA : fx.gainB;
-          const standbyGain = state.playerDeck.activeAudioId === 'audio' ? fx.gainB : fx.gainA;
+          const activeGain = state.jukeboxPlayer.activeAudioId === 'audioJukeboxA' ? fx.gainA : fx.gainB;
+          const standbyGain = state.jukeboxPlayer.activeAudioId === 'audioJukeboxA' ? fx.gainB : fx.gainA;
           activeGain.gain.value = current.muted ? 0 : (1 - ratio);
           standbyGain.gain.value = standby.muted ? 0 : ratio;
         } else {
@@ -1078,13 +1511,14 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
           standby.volume = Math.max(0, ratio * (standby.volume || 0.7));
         }
         if (ratio < 1) return;
-        stopCrossfade();
+        stopJukeboxCrossfade();
         current.pause();
         current.src = '';
-        swapAudioDecks();
-        syncDeckVolumes();
-        state.queueIndex = nextIndex;
-        state.nowPlayingTrackId = normTrackID(nextTrack.id);
+        swapJukeboxDecks();
+        syncJukeboxDeckVolumes();
+        state.jukeboxPlayer.queueIndex = nextIndex;
+        state.jukeboxPlayer.nowPlayingTrackId = normTrackID(nextTrack.id);
+        syncLegacyPlayerMirror('jukebox');
         if (state.jukebox && state.jukebox.session_id) {
           state.jukebox.current_position = Math.max(0, nextIndex);
         }
@@ -1093,19 +1527,14 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         }
         beginListeningSession(nextTrack, sourceContext);
         await loadTrackLyrics(nextTrack.id);
-        await updateNowPlayingVisuals(nextTrack);
-        if (state.selectedPlaylistTracks.length) {
-          renderPlaylistTracks();
-        } else {
-          renderPlaylistDock();
-        }
+        state.jukeboxCurrentCoverURL = await resolveTrackCoverURL(nextTrack);
         if (state.currentView === 'jukebox' && typeof ns.renderJukeboxNowPlaying === 'function') {
           ns.renderJukeboxNowPlaying();
           if (typeof ns.renderJukeboxQueue === 'function') ns.renderJukeboxQueue();
         }
-        primeNextSignedStream(state.queue, state.queueIndex).catch(() => {});
-        updatePlayerButtons();
-        emitPlayerState(true);
+        primeNextSignedStream(state.jukeboxPlayer.queue, state.jukeboxPlayer.queueIndex).catch(() => {});
+        cacheJukeboxSnapshot();
+        emitJukeboxState(true);
       }, 100);
     }
 
@@ -1122,8 +1551,11 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       if (!sourceContext && isJukeboxQueue) {
         sourceContext = `jukebox:${state.jukebox.mode || 'for_you'}`;
       }
-      state.playerDeck.currentSourceContext = sourceContextForPlayback(sourceContext);
-      stopCrossfade();
+      try {
+        sourceContextForPlayback(sourceContext);
+      } catch (_) {}
+      stopJukeboxPlayback();
+      stopMainPlayback();
       if (state.listeningSession && state.listeningSession.track_id !== trackId) {
         finalizeListeningSession('switch');
       }
@@ -1133,16 +1565,83 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         return;
       }
 
-      state.queue = sourceList;
-      state.queueIndex = sourceList.findIndex((x) => x.id === trackId);
-      state.nowPlayingTrackId = normTrackID(trackId);
-      if (state.jukebox && state.jukebox.session_id && Array.isArray(state.jukebox.queue) && sourceContextForPlayback(sourceContext).startsWith('jukebox')) {
-        state.jukebox.queue = sourceList.slice();
-        state.jukebox.current_position = Math.max(0, state.queueIndex);
+      state.mainPlayer.queue = sourceList.slice();
+      state.mainPlayer.queueIndex = sourceList.findIndex((x) => x.id === trackId);
+      state.mainPlayer.nowPlayingTrackId = normTrackID(trackId);
+      state.currentTrackMeta = {
+        id: t.id,
+        title: t.title || 'Untitled',
+        artist: t.artist || '-',
+        album: t.album || '-',
+        album_id: Number(t.album_id || t.albumID || 0),
+        uploader_name: t.uploader_name || t.owner_sub || '-'
+      };
+      syncLegacyPlayerMirror('main');
+      state.activeEngine = 'main';
+      cachePlayerSnapshot();
+      emitPlayerState(true);
+      const audio = $('audio');
+      audio.src = `/api/v1/stream/${trackId}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
+      audio.preload = 'auto';
+      audio.currentTime = 0;
+      audio.muted = false;
+      audio.volume = Number($('volumeRange')?.value || 70) / 100;
+      try { audio.load(); } catch (_) {}
+      await resumeAudioContextIfNeeded();
+      try {
+        await audio.play();
+      } catch (err) {
+        console.warn('manual main player audio.play() failed', err);
+        alert('Manual playback could not be started.');
+        return;
+      }
+      beginListeningSession(t, sourceContext);
+      try {
+        await loadTrackLyrics(trackId);
+      } catch (err) {
+        console.warn('loadTrackLyrics failed for main player track', err);
       }
 
-      const audio = activeAudio();
-      const standby = standbyAudio();
+      updatePlayerButtons();
+      try {
+        await updateNowPlayingVisuals(t);
+      } catch (err) {
+        console.warn('updateNowPlayingVisuals failed for main player track', err);
+      }
+      cachePlayerSnapshot();
+      emitPlayerState(true);
+      try {
+        if (state.selectedPlaylistTracks.length) {
+          renderPlaylistTracks();
+        } else {
+          renderPlaylistDock();
+        }
+      } catch (err) {
+        console.warn('playlist render failed after main player start', err);
+      }
+      showPlayer();
+      primeNextSignedStream(state.mainPlayer.queue, state.mainPlayer.queueIndex).catch(() => {});
+      closePanels();
+    }
+
+    async function startJukeboxTrackById(trackId, sourceList = [], sourceContext = 'jukebox') {
+      const t = sourceList.find((x) => x.id === trackId);
+      if (!t) return;
+      stopMainPlayback();
+      if (state.listeningSession && state.listeningSession.track_id !== trackId) {
+        finalizeListeningSession('switch');
+      }
+      const signed = await ensureSignedStream(trackId, 'mp3');
+      if (!signed) {
+        alert('Play requires login and permission for this track.');
+        return;
+      }
+      state.jukeboxPlayer.queue = sourceList.slice();
+      state.jukeboxPlayer.queueIndex = sourceList.findIndex((x) => x.id === trackId);
+      state.jukeboxPlayer.nowPlayingTrackId = normTrackID(trackId);
+      syncLegacyPlayerMirror('jukebox');
+      const audio = jukeboxActiveAudio();
+      const standby = jukeboxStandbyAudio();
       standby.pause();
       standby.src = '';
       audio.src = `/api/v1/stream/${trackId}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
@@ -1151,23 +1650,23 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       await resumeAudioContextIfNeeded();
       await audio.play();
       beginListeningSession(t, sourceContext);
-      await loadTrackLyrics(trackId);
-
-      updatePlayerButtons();
-      await updateNowPlayingVisuals(t);
-      if (state.selectedPlaylistTracks.length) {
-        renderPlaylistTracks();
-      } else {
-        renderPlaylistDock();
+      try {
+        await loadTrackLyrics(trackId);
+      } catch (err) {
+        console.warn('loadTrackLyrics failed for jukebox track', err);
       }
-      showPlayer();
+      try {
+        state.jukeboxCurrentCoverURL = await resolveTrackCoverURL(t);
+      } catch (err) {
+        console.warn('resolveTrackCoverURL failed for jukebox track', err);
+      }
       if (state.currentView === 'jukebox' && typeof ns.renderJukeboxNowPlaying === 'function') {
         ns.renderJukeboxNowPlaying();
         if (typeof ns.renderJukeboxQueue === 'function') ns.renderJukeboxQueue();
       }
-      primeNextSignedStream(state.queue, state.queueIndex).catch(() => {});
-      closePanels();
-      emitPlayerState(true);
+      primeNextSignedStream(state.jukeboxPlayer.queue, state.jukeboxPlayer.queueIndex).catch(() => {});
+      cacheJukeboxSnapshot();
+      emitJukeboxState(true);
     }
 
     async function playAlbum(shuffle = false) {
@@ -1179,32 +1678,39 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
 
     function insertQueueAfterCurrent(tracks) {
       if (!tracks.length) return;
-      if (!state.queue.length || state.queueIndex < 0) {
-        state.queue = tracks.slice();
-        state.queueIndex = -1;
+      const engine = state.mainPlayer;
+      if (!engine.queue.length || engine.queueIndex < 0) {
+        engine.queue = tracks.slice();
+        engine.queueIndex = -1;
+        if ((state.activeEngine || 'main') === 'main') syncLegacyPlayerMirror('main');
         emitPlayerState(true);
         return;
       }
-      const left = state.queue.slice(0, state.queueIndex + 1);
-      const right = state.queue.slice(state.queueIndex + 1);
-      state.queue = left.concat(tracks).concat(right);
+      const left = engine.queue.slice(0, engine.queueIndex + 1);
+      const right = engine.queue.slice(engine.queueIndex + 1);
+      engine.queue = left.concat(tracks).concat(right);
+      if ((state.activeEngine || 'main') === 'main') syncLegacyPlayerMirror('main');
       emitPlayerState(true);
     }
 
     function appendToQueue(tracks) {
       if (!tracks.length) return;
-      if (!state.queue.length) {
-        state.queue = tracks.slice();
-        state.queueIndex = -1;
+      const engine = state.mainPlayer;
+      if (!engine.queue.length) {
+        engine.queue = tracks.slice();
+        engine.queueIndex = -1;
+        if ((state.activeEngine || 'main') === 'main') syncLegacyPlayerMirror('main');
         emitPlayerState(true);
         return;
       }
-      state.queue = state.queue.concat(tracks);
+      engine.queue = engine.queue.concat(tracks);
+      if ((state.activeEngine || 'main') === 'main') syncLegacyPlayerMirror('main');
       emitPlayerState(true);
     }
 
 Object.assign(window.HexSonic, {
       isPopoutPlayerMode,
+      isJukeboxPopoutMode,
       applyPopoutPlayerMode,
       parseSRTTimeToMs,
       parseSRTLyrics,
@@ -1228,7 +1734,9 @@ Object.assign(window.HexSonic, {
       renderPopoutSnapshot,
       applyPopoutTick,
       initPlayerBridge,
+      initJukeboxBridge,
       bindPopoutEvents,
+      bindJukeboxPopoutEvents,
       closePanels,
       showPlayer,
       hidePlayer,
@@ -1244,13 +1752,19 @@ Object.assign(window.HexSonic, {
       resumeAudioContextIfNeeded,
       eqPresetGains,
       applyEQPreset,
+      resolveTrackCoverURL,
       signStream,
       ensureSignedStream,
       primeNextSignedStream,
       activeAudio,
       standbyAudio,
+      jukeboxActiveAudio,
+      emitJukeboxState,
+      emitJukeboxTick,
+      openJukeboxPopout,
       maybeScheduleJukeboxCrossfade,
       startTrackById,
+      startJukeboxTrackById,
       playAlbum,
       insertQueueAfterCurrent,
       appendToQueue

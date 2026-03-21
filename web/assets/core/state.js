@@ -60,17 +60,47 @@
       currentView: 'discovery',
       albumGenreFilter: 'all',
       trackGenreFilter: 'all',
+      jukeboxPopoutMode: false,
+      activeEngine: 'main',
+      mainPlayer: {
+        queue: [],
+        queueIndex: -1,
+        nowPlayingTrackId: '',
+        currentLyrics: { track_id: '', plain: '', srt: '', cues: [] }
+      },
+      jukeboxPlayer: {
+        queue: [],
+        queueIndex: -1,
+        nowPlayingTrackId: '',
+        currentLyrics: { track_id: '', plain: '', srt: '', cues: [] },
+        activeAudioId: 'audioJukeboxA',
+        standbyAudioId: 'audioJukeboxB',
+        currentSourceContext: '',
+        crossfadeSeconds: 5,
+        crossfadeTimer: null,
+        crossfading: false,
+        crossfadeTrackId: '',
+        crossfadeTargetIndex: -1
+      },
       queue: [],
       queueIndex: -1,
       nowPlayingTrackId: '',
+      currentTrackMeta: null,
+      currentCoverURL: '',
+      jukeboxCurrentCoverURL: '',
       audioFX: null,
       currentLyrics: { track_id: '', plain: '', srt: '', cues: [] },
       popoutMode: false,
       popoutWindow: null,
       playerBridge: null,
+      jukeboxBridge: null,
       popoutSnapshot: null,
+      jukeboxPopoutSnapshot: null,
       popoutLastLyricIndex: -1,
       lastBridgeStateAt: 0,
+      lastFullBridgeStateAt: 0,
+      popoutSyncTimer: null,
+      jukeboxPopoutSyncTimer: null,
       bridgeTickTimer: null,
       popVizMode: localStorage.getItem('hex_pop_viz_mode') || 'bars',
       popLyricAutoScroll: localStorage.getItem('hex_pop_lyric_autoscroll') !== '0',
@@ -80,17 +110,6 @@
       popVizPrevBins: [],
       listeningSession: null,
       streamSignCache: {}
-      ,
-      playerDeck: {
-        activeAudioId: 'audio',
-        standbyAudioId: 'audioB',
-        currentSourceContext: '',
-        crossfadeSeconds: 5,
-        crossfadeTimer: null,
-        crossfading: false,
-        crossfadeTrackId: '',
-        crossfadeTargetIndex: -1
-      }
     };
     const ICON_PLAY = '\u25b6';
     const ICON_PAUSE = '\u23f8';
@@ -99,6 +118,7 @@
     const ICON_DETAIL = '\u2139';
     const ICON_PLAYLIST = '\u2261';
     const PLAYER_BRIDGE_CHANNEL = 'hexsonic-player-bridge-v1';
+    const JUKEBOX_BRIDGE_CHANNEL = 'hexsonic-jukebox-bridge-v1';
     const PLAYER_TICK_MS = 34;
 
     const $ = (id) => document.getElementById(id);
@@ -118,6 +138,7 @@
     ICON_DETAIL,
     ICON_PLAYLIST,
     PLAYER_BRIDGE_CHANNEL,
+    JUKEBOX_BRIDGE_CHANNEL,
     PLAYER_TICK_MS,
     SELECTED_ALBUM_KEY
   });

@@ -28,7 +28,9 @@ const loadAdminAuditLogs = (...args) => ns.loadAdminAuditLogs(...args);
 const updateProfileDirtyState = (...args) => ns.updateProfileDirtyState(...args);
 const renderAlbumDetail = (...args) => ns.renderAlbumDetail(...args);
 const isFavorite = (...args) => ns.isFavorite(...args);
+const toggleFavorite = (...args) => ns.toggleFavorite(...args);
 const canCreatePlaylists = (...args) => ns.canCreatePlaylists(...args);
+const startTrackById = (...args) => ns.startTrackById(...args);
 
     function clearAlbumCoverURLs() {
       state.albumCoverURLs = {};
@@ -60,6 +62,7 @@ const canCreatePlaylists = (...args) => ns.canCreatePlaylists(...args);
         title: t.title || 'Untitled',
         artist: t.artist || '-',
         album: t.album || '-',
+        album_id: Number(t.album_id || 0),
         genre: t.genre || '',
         track_number: Number(t.track_number || 0),
         rating: Number(t.rating || t.average_rating || 0),
