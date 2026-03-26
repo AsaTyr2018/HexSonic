@@ -8,6 +8,7 @@ const renderPlaylistTracks = (...args) => ns.renderPlaylistTracks(...args);
 const renderPlaylistDock = (...args) => ns.renderPlaylistDock(...args);
 const selectAlbum = (...args) => ns.selectAlbum(...args);
 const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...args);
+const getSelectedAlbumTracks = (...args) => ns.getSelectedAlbumTracks(...args);
 
     function audioById(id) {
       return $(id);
@@ -189,6 +190,65 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       return track ? normTrackID(track.id) : '';
     }
 
+    function normalizeRepeatMode(value) {
+      const raw = String(value || '').trim().toLowerCase();
+      if (raw === 'all' || raw === 'one') return raw;
+      return 'off';
+    }
+
+    function resolveMainQueueIndex() {
+      const engine = state.mainPlayer;
+      if (!Array.isArray(engine.queue) || !engine.queue.length) return -1;
+      const direct = Number(engine.queueIndex);
+      if (Number.isInteger(direct) && direct >= 0 && direct < engine.queue.length) return direct;
+      const nowID = normTrackID(engine.nowPlayingTrackId || state.nowPlayingTrackId);
+      if (!nowID) return -1;
+      const idx = engine.queue.findIndex((item) => normTrackID(item?.id) === nowID);
+      if (idx >= 0) {
+        engine.queueIndex = idx;
+        syncLegacyPlayerMirror('main');
+      }
+      return idx;
+    }
+
+    function cycleMainRepeatMode() {
+      const engine = state.mainPlayer;
+      const current = normalizeRepeatMode(engine.repeatMode);
+      const next = current === 'off' ? 'all' : current === 'all' ? 'one' : 'off';
+      engine.repeatMode = next;
+      localStorage.setItem('hex_main_repeat_mode', next);
+      syncLegacyPlayerMirror('main');
+      updatePlayerButtons();
+      emitPlayerState(true);
+    }
+
+    function toggleMainShuffle() {
+      const engine = state.mainPlayer;
+      engine.shuffle = !engine.shuffle;
+      localStorage.setItem('hex_main_shuffle', engine.shuffle ? '1' : '0');
+      syncLegacyPlayerMirror('main');
+      updatePlayerButtons();
+      emitPlayerState(true);
+    }
+
+    function pickMainAdjacentIndex(direction = 1) {
+      const engine = state.mainPlayer;
+      const queue = Array.isArray(engine.queue) ? engine.queue : [];
+      if (!queue.length) return -1;
+      const idx = resolveMainQueueIndex();
+      if (idx < 0) return -1;
+      const repeatMode = normalizeRepeatMode(engine.repeatMode);
+      if (repeatMode === 'one') return idx;
+      if (engine.shuffle && queue.length > 1) {
+        const choices = queue.map((_, i) => i).filter((i) => i !== idx);
+        return choices[Math.floor(Math.random() * choices.length)];
+      }
+      const candidate = idx + (direction < 0 ? -1 : 1);
+      if (candidate < 0) return repeatMode === 'all' ? queue.length - 1 : -1;
+      if (candidate >= queue.length) return repeatMode === 'all' ? 0 : -1;
+      return candidate;
+    }
+
     function isActiveTrack(trackID) {
       const id = normTrackID(trackID);
       if (!id) return false;
@@ -226,6 +286,8 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
           album: q.album || '-'
         })),
         queue_index: engine.queueIndex,
+        shuffle: !!engine.shuffle,
+        repeat_mode: normalizeRepeatMode(engine.repeatMode),
         paused: audio.paused,
         muted: audio.muted,
         volume: Math.round((audio.volume || 0) * 100),
@@ -302,6 +364,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       if (!force && now - state.lastBridgeStateAt < 120) return;
       state.lastBridgeStateAt = now;
       const snapshot = cachePlayerSnapshot();
+      if (typeof renderManualQueueDock === 'function') renderManualQueueDock();
       if (!state.playerBridge) return;
       state.playerBridge.postMessage({ type: 'player_state', payload: snapshot });
     }
@@ -315,6 +378,8 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         paused: !!audio.paused,
         muted: !!audio.muted,
         volume: Math.round((audio.volume || 0) * 100),
+        shuffle: !!state.mainPlayer.shuffle,
+        repeat_mode: normalizeRepeatMode(state.mainPlayer.repeatMode),
         bins: visualizerBins()
       };
     }
@@ -380,16 +445,33 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       }
       if (action === 'prev') {
         if (!engine.queue.length) return;
-        engine.queueIndex = (engine.queueIndex - 1 + engine.queue.length) % engine.queue.length;
+        const prevIdx = pickMainAdjacentIndex(-1);
+        if (prevIdx < 0) return;
+        engine.queueIndex = prevIdx;
         syncLegacyPlayerMirror('main');
         await startTrackById(engine.queue[engine.queueIndex].id, engine.queue);
         return;
       }
       if (action === 'next') {
         if (!engine.queue.length) return;
-        engine.queueIndex = (engine.queueIndex + 1) % engine.queue.length;
+        const nextIdx = pickMainAdjacentIndex(1);
+        if (nextIdx < 0) {
+          audio.pause();
+          updatePlayerButtons();
+          emitPlayerState(true);
+          return;
+        }
+        engine.queueIndex = nextIdx;
         syncLegacyPlayerMirror('main');
         await startTrackById(engine.queue[engine.queueIndex].id, engine.queue);
+        return;
+      }
+      if (action === 'toggle_shuffle') {
+        toggleMainShuffle();
+        return;
+      }
+      if (action === 'cycle_repeat') {
+        cycleMainRepeatMode();
         return;
       }
       if (action === 'seek') {
@@ -776,6 +858,14 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       $('popEqPreset').value = snapshot.eq || 'flat';
       $('popPlayPause').textContent = snapshot.paused ? ICON_PLAY : ICON_PAUSE;
       $('popMute').textContent = snapshot.muted ? ICON_MUTE : ICON_UNMUTE;
+      $('popShuffle').classList.toggle('active', !!snapshot.shuffle);
+      $('popShuffle').title = snapshot.shuffle ? 'Shuffle on' : 'Shuffle off';
+      const popRepeat = $('popRepeat');
+      const repeatMode = normalizeRepeatMode(snapshot.repeat_mode);
+      popRepeat.dataset.mode = repeatMode;
+      popRepeat.textContent = repeatMode === 'one' ? '↻1' : '↻';
+      popRepeat.classList.toggle('active', repeatMode !== 'off');
+      popRepeat.title = `Repeat ${repeatMode}`;
       renderPopoutVisualizer(snapshot.bins || [], snapshot || {}, Number(snapshot.current_time || 0));
       renderPopoutQueue(snapshot);
     }
@@ -796,6 +886,15 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       $('popVolume').value = String(state.popoutSnapshot.volume);
       $('popPlayPause').textContent = state.popoutSnapshot.paused ? ICON_PLAY : ICON_PAUSE;
       $('popMute').textContent = state.popoutSnapshot.muted ? ICON_MUTE : ICON_UNMUTE;
+      state.popoutSnapshot.shuffle = !!t.shuffle;
+      state.popoutSnapshot.repeat_mode = normalizeRepeatMode(t.repeat_mode);
+      $('popShuffle').classList.toggle('active', !!state.popoutSnapshot.shuffle);
+      $('popShuffle').title = state.popoutSnapshot.shuffle ? 'Shuffle on' : 'Shuffle off';
+      const popRepeat = $('popRepeat');
+      popRepeat.dataset.mode = state.popoutSnapshot.repeat_mode;
+      popRepeat.textContent = state.popoutSnapshot.repeat_mode === 'one' ? '↻1' : '↻';
+      popRepeat.classList.toggle('active', state.popoutSnapshot.repeat_mode !== 'off');
+      popRepeat.title = `Repeat ${state.popoutSnapshot.repeat_mode}`;
       renderPopoutVisualizer(Array.isArray(t.bins) ? t.bins : [], state.popoutSnapshot || {}, state.popoutSnapshot.current_time);
     }
 
@@ -829,8 +928,6 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       const t = snapshot?.track || null;
       $('jukePopTitle').textContent = t ? (t.title || 'Untitled') : 'Nothing playing';
       $('jukePopSub').textContent = t ? `${t.artist || '-'} · ${t.album || '-'} · by ${t.uploader_name || '-'}` : 'Start a Jukebox session.';
-      $('jukePopReason').textContent = t ? (t.reason || 'Adaptive radio selection.') : 'Start a Jukebox session to begin.';
-      $('jukePopMode').textContent = snapshot?.mode ? String(snapshot.mode).replaceAll('_', ' ') : 'Jukebox';
       if (snapshot?.cover_url) {
         $('jukePopCover').style.backgroundImage = `linear-gradient(180deg, rgba(0,0,0,.1), rgba(0,0,0,.45)), url('${snapshot.cover_url}')`;
       } else {
@@ -840,10 +937,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       $('jukePopDuration').textContent = fmt(Number(snapshot?.duration || 0));
       const d = Number(snapshot?.duration || 0);
       const p = d > 0 ? Number(snapshot?.current_time || 0) / d : 0;
-      $('jukePopSeek').value = String(Math.max(0, Math.min(1000, Math.round(p * 1000))));
-      $('jukePopVolume').value = String(Math.max(0, Math.min(100, Number(snapshot?.volume || 0))));
-      $('jukePopPlayPause').textContent = snapshot?.paused ? ICON_PLAY : ICON_PAUSE;
-      $('jukePopMute').textContent = snapshot?.muted ? ICON_MUTE : ICON_UNMUTE;
+      $('jukePopProgressFill').style.width = `${Math.max(0, Math.min(100, p * 100)).toFixed(2)}%`;
       renderJukeboxPopoutQueue(snapshot || {});
     }
 
@@ -859,10 +953,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       $('jukePopDuration').textContent = fmt(state.jukeboxPopoutSnapshot.duration);
       const d = Number(state.jukeboxPopoutSnapshot.duration || 0);
       const p = d > 0 ? state.jukeboxPopoutSnapshot.current_time / d : 0;
-      $('jukePopSeek').value = String(Math.max(0, Math.min(1000, Math.round(p * 1000))));
-      $('jukePopVolume').value = String(state.jukeboxPopoutSnapshot.volume);
-      $('jukePopPlayPause').textContent = state.jukeboxPopoutSnapshot.paused ? ICON_PLAY : ICON_PAUSE;
-      $('jukePopMute').textContent = state.jukeboxPopoutSnapshot.muted ? ICON_MUTE : ICON_UNMUTE;
+      $('jukePopProgressFill').style.width = `${Math.max(0, Math.min(100, p * 100)).toFixed(2)}%`;
     }
 
     function requestPopoutStateSync() {
@@ -996,9 +1087,11 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
 
     function bindPopoutEvents() {
       $('popClose').onclick = () => window.close();
+      $('popShuffle').onclick = () => state.playerBridge && state.playerBridge.postMessage({ type: 'player_control', action: 'toggle_shuffle' });
       $('popPlayPause').onclick = () => state.playerBridge && state.playerBridge.postMessage({ type: 'player_control', action: 'play_pause' });
       $('popPrev').onclick = () => state.playerBridge && state.playerBridge.postMessage({ type: 'player_control', action: 'prev' });
       $('popNext').onclick = () => state.playerBridge && state.playerBridge.postMessage({ type: 'player_control', action: 'next' });
+      $('popRepeat').onclick = () => state.playerBridge && state.playerBridge.postMessage({ type: 'player_control', action: 'cycle_repeat' });
       $('popMute').onclick = () => state.playerBridge && state.playerBridge.postMessage({ type: 'player_control', action: 'mute_toggle' });
       $('popSeek').oninput = (e) => {
         if (!state.playerBridge) return;
@@ -1070,12 +1163,6 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
 
     function bindJukeboxPopoutEvents() {
       $('jukePopClose').onclick = () => window.close();
-      $('jukePopPlayPause').onclick = () => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'play_pause' });
-      $('jukePopPrev').onclick = () => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'prev' });
-      $('jukePopNext').onclick = () => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'next' });
-      $('jukePopMute').onclick = () => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'mute_toggle' });
-      $('jukePopSeek').oninput = (e) => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'seek', value: Number(e.target.value) / 1000 });
-      $('jukePopVolume').oninput = (e) => state.jukeboxBridge && state.jukeboxBridge.postMessage({ type: 'jukebox_control', action: 'volume', value: Number(e.target.value) });
     }
 
     function syncRoleUI() {
@@ -1157,6 +1244,19 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       $('btnMute').title = a.muted ? 'Unmute audio' : 'Mute audio';
       $('btnMute').setAttribute('aria-label', a.muted ? 'Unmute audio' : 'Mute audio');
       $('volumeValueLabel').textContent = a.muted ? `Muted ${volumePct}%` : `${volumePct}%`;
+      const shuffleBtn = $('btnShuffle');
+      if (shuffleBtn) {
+        shuffleBtn.classList.toggle('active', !!state.mainPlayer.shuffle);
+        shuffleBtn.title = state.mainPlayer.shuffle ? 'Shuffle on' : 'Shuffle off';
+      }
+      const repeatBtn = $('btnRepeat');
+      if (repeatBtn) {
+        const repeatMode = normalizeRepeatMode(state.mainPlayer.repeatMode);
+        repeatBtn.dataset.mode = repeatMode;
+        repeatBtn.textContent = repeatMode === 'one' ? '↻1' : '↻';
+        repeatBtn.classList.toggle('active', repeatMode !== 'off');
+        repeatBtn.title = `Repeat ${repeatMode}`;
+      }
     }
 
     function setPlayerThumb(url = '') {
@@ -1535,11 +1635,15 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
         primeNextSignedStream(state.jukeboxPlayer.queue, state.jukeboxPlayer.queueIndex).catch(() => {});
         cacheJukeboxSnapshot();
         emitJukeboxState(true);
+        if ((state.jukeboxPlayer.queue.length - nextIndex) <= 3 && typeof ns.refreshJukeboxQueue === 'function') {
+          ns.refreshJukeboxQueue(nextIndex).catch(() => {});
+        }
       }, 100);
     }
 
     async function startTrackById(trackId, sourceList = state.filteredTracks, sourceContext = '') {
-      const t = sourceList.find((x) => x.id === trackId);
+      const targetID = normTrackID(trackId);
+      const t = sourceList.find((x) => normTrackID(x?.id) === targetID);
       if (!t) return;
       const isJukeboxQueue = !!(
         state.jukebox &&
@@ -1566,8 +1670,16 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       }
 
       state.mainPlayer.queue = sourceList.slice();
-      state.mainPlayer.queueIndex = sourceList.findIndex((x) => x.id === trackId);
-      state.mainPlayer.nowPlayingTrackId = normTrackID(trackId);
+      state.mainPlayer.queueIndex = sourceList.findIndex((x) => normTrackID(x?.id) === targetID);
+      if (state.mainPlayer.queueIndex < 0 && state.selectedAlbum) {
+        const albumQueue = getSelectedAlbumTracks();
+        const albumIdx = albumQueue.findIndex((x) => normTrackID(x?.id) === targetID);
+        if (albumIdx >= 0) {
+          state.mainPlayer.queue = albumQueue;
+          state.mainPlayer.queueIndex = albumIdx;
+        }
+      }
+      state.mainPlayer.nowPlayingTrackId = targetID;
       state.currentTrackMeta = {
         id: t.id,
         title: t.title || 'Untitled',
@@ -1581,7 +1693,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       cachePlayerSnapshot();
       emitPlayerState(true);
       const audio = $('audio');
-      audio.src = `/api/v1/stream/${trackId}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
+      audio.src = `/api/v1/stream/${targetID}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
       audio.preload = 'auto';
       audio.currentTime = 0;
       audio.muted = false;
@@ -1597,7 +1709,7 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
       }
       beginListeningSession(t, sourceContext);
       try {
-        await loadTrackLyrics(trackId);
+        await loadTrackLyrics(targetID);
       } catch (err) {
         console.warn('loadTrackLyrics failed for main player track', err);
       }
@@ -1625,33 +1737,34 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     async function startJukeboxTrackById(trackId, sourceList = [], sourceContext = 'jukebox') {
-      const t = sourceList.find((x) => x.id === trackId);
+      const targetID = normTrackID(trackId);
+      const t = sourceList.find((x) => normTrackID(x?.id) === targetID);
       if (!t) return;
       stopMainPlayback();
       if (state.listeningSession && state.listeningSession.track_id !== trackId) {
         finalizeListeningSession('switch');
       }
-      const signed = await ensureSignedStream(trackId, 'mp3');
+      const signed = await ensureSignedStream(targetID, 'mp3');
       if (!signed) {
         alert('Play requires login and permission for this track.');
         return;
       }
       state.jukeboxPlayer.queue = sourceList.slice();
-      state.jukeboxPlayer.queueIndex = sourceList.findIndex((x) => x.id === trackId);
-      state.jukeboxPlayer.nowPlayingTrackId = normTrackID(trackId);
+      state.jukeboxPlayer.queueIndex = sourceList.findIndex((x) => normTrackID(x?.id) === targetID);
+      state.jukeboxPlayer.nowPlayingTrackId = targetID;
       syncLegacyPlayerMirror('jukebox');
       const audio = jukeboxActiveAudio();
       const standby = jukeboxStandbyAudio();
       standby.pause();
       standby.src = '';
-      audio.src = `/api/v1/stream/${trackId}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
+      audio.src = `/api/v1/stream/${targetID}?format=mp3&token=${encodeURIComponent(signed.token)}&expires=${signed.expires_unix}`;
       audio.preload = 'auto';
       audio.volume = Number($('volumeRange')?.value || 70) / 100;
       await resumeAudioContextIfNeeded();
       await audio.play();
       beginListeningSession(t, sourceContext);
       try {
-        await loadTrackLyrics(trackId);
+        await loadTrackLyrics(targetID);
       } catch (err) {
         console.warn('loadTrackLyrics failed for jukebox track', err);
       }
@@ -1670,10 +1783,122 @@ const sourceContextForPlayback = (...args) => ns.sourceContextForPlayback(...arg
     }
 
     async function playAlbum(shuffle = false) {
-      let tracks = state.selectedAlbum ? getSelectedAlbumTracks() : state.filteredTracks.slice();
+      let tracks = [];
+      if (state.selectedAlbum) {
+        tracks = state.tracks.filter((t) => {
+          if (normText(t.album) !== normText(state.selectedAlbum.title)) return false;
+          if (!state.selectedAlbum.artist || !t.artist) return true;
+          return normText(t.artist) === normText(state.selectedAlbum.artist);
+        });
+        tracks.sort((a, b) => {
+          const an = Number(a.track_number || 0);
+          const bn = Number(b.track_number || 0);
+          if (an > 0 && bn > 0 && an !== bn) return an - bn;
+          if (an > 0 && bn <= 0) return -1;
+          if (bn > 0 && an <= 0) return 1;
+          return String(a.title || '').localeCompare(String(b.title || ''));
+        });
+      } else {
+        tracks = state.filteredTracks.slice();
+      }
       if (!tracks.length) return;
       if (shuffle) tracks = tracks.sort(() => Math.random() - 0.5);
       await startTrackById(tracks[0].id, tracks);
+    }
+
+    function setManualQueueOpen(open) {
+      state.manualQueueOpen = !!open;
+      localStorage.setItem('hex_manual_queue_open', state.manualQueueOpen ? '1' : '0');
+      const dock = $('manualQueueDock');
+      const toggle = $('btnManualQueueToggle');
+      const inline = $('btnManualQueue');
+      if (!dock || !toggle) return;
+      dock.classList.toggle('open', state.manualQueueOpen);
+      dock.classList.toggle('hidden', !state.manualQueueOpen);
+      toggle.classList.toggle('hidden', !state.mainPlayer.queue.length);
+      toggle.classList.toggle('active', state.manualQueueOpen);
+      if (inline) inline.classList.toggle('active', state.manualQueueOpen);
+      syncPlayerSideDocks();
+    }
+
+    function renderManualQueueDock() {
+      const body = $('manualQueueBody');
+      const meta = $('manualQueueMeta');
+      const toggle = $('btnManualQueueToggle');
+      const inline = $('btnManualQueue');
+      if (!body || !meta || !toggle) return;
+      const queue = Array.isArray(state.mainPlayer.queue) ? state.mainPlayer.queue : [];
+      const idx = Number(state.mainPlayer.queueIndex || -1);
+      const hasQueue = queue.length > 0;
+      toggle.classList.toggle('hidden', !hasQueue);
+      if (inline) inline.disabled = !hasQueue;
+      meta.textContent = hasQueue ? `${queue.length} queued tracks · current ${idx >= 0 ? idx + 1 : '-'}/${queue.length}` : 'No manual queue active.';
+      body.innerHTML = '';
+      if (!hasQueue) {
+        body.innerHTML = '<div class="muted">Start a manual track or album to build a queue.</div>';
+        setManualQueueOpen(false);
+        return;
+      }
+      queue.forEach((track, queueIndex) => {
+        const item = document.createElement('div');
+        item.className = `manual-queue-item ${queueIndex === idx ? 'active' : ''}`.trim();
+        item.innerHTML = `
+          <div class="manual-queue-index">${queueIndex === idx ? '&gt;' : queueIndex + 1}</div>
+          <div class="manual-queue-meta">
+            <div class="manual-queue-title">${escapeHtml(track.title || '-')}</div>
+            <div class="manual-queue-sub">${escapeHtml(track.artist || '-')} · ${escapeHtml(track.album || '-')}</div>
+          </div>
+          <div class="manual-queue-actions">
+            <button class="btn slim" data-main-queue-jump="${queueIndex}">Play</button>
+            <button class="btn slim danger" data-main-queue-remove="${queueIndex}">Remove</button>
+          </div>
+        `;
+        const jumpBtn = item.querySelector('[data-main-queue-jump]');
+        if (jumpBtn) jumpBtn.onclick = async () => applyPlayerControl('jump_queue_index', queueIndex);
+        const removeBtn = item.querySelector('[data-main-queue-remove]');
+        if (removeBtn) removeBtn.onclick = () => removeMainQueueIndex(queueIndex);
+        body.appendChild(item);
+      });
+      syncPlayerSideDocks();
+    }
+
+    function syncPlayerSideDocks() {
+      const queueDock = $('manualQueueDock');
+      const playlistDock = $('playlistDock');
+      if (!queueDock || !playlistDock) return;
+      const queueOpen = !!state.manualQueueOpen && !queueDock.classList.contains('hidden');
+      const playlistOpen = !!state.playlistDockOpen && !playlistDock.classList.contains('hidden');
+      queueDock.classList.toggle('is-paired-left', queueOpen && playlistOpen);
+      playlistDock.classList.toggle('is-paired-right', queueOpen && playlistOpen);
+    }
+
+    function removeMainQueueIndex(index) {
+      const engine = state.mainPlayer;
+      const idx = Number(index);
+      if (!Number.isFinite(idx) || idx < 0 || idx >= engine.queue.length) return;
+      engine.queue.splice(idx, 1);
+      if (!engine.queue.length) {
+        engine.queueIndex = -1;
+        engine.nowPlayingTrackId = '';
+        syncLegacyPlayerMirror('main');
+        emitPlayerState(true);
+        return;
+      }
+      if (idx < engine.queueIndex) {
+        engine.queueIndex -= 1;
+      } else if (idx === engine.queueIndex) {
+        engine.queueIndex = Math.min(engine.queueIndex, engine.queue.length - 1);
+      }
+      syncLegacyPlayerMirror('main');
+      emitPlayerState(true);
+    }
+
+    function clearMainQueue() {
+      state.mainPlayer.queue = [];
+      state.mainPlayer.queueIndex = -1;
+      state.mainPlayer.nowPlayingTrackId = '';
+      syncLegacyPlayerMirror('main');
+      emitPlayerState(true);
     }
 
     function insertQueueAfterCurrent(tracks) {
@@ -1758,6 +1983,7 @@ Object.assign(window.HexSonic, {
       primeNextSignedStream,
       activeAudio,
       standbyAudio,
+      pickMainAdjacentIndex,
       jukeboxActiveAudio,
       emitJukeboxState,
       emitJukeboxTick,
@@ -1766,6 +1992,11 @@ Object.assign(window.HexSonic, {
       startTrackById,
       startJukeboxTrackById,
       playAlbum,
+      setManualQueueOpen,
+      renderManualQueueDock,
+      syncPlayerSideDocks,
+      removeMainQueueIndex,
+      clearMainQueue,
       insertQueueAfterCurrent,
       appendToQueue
 });

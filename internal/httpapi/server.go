@@ -184,6 +184,7 @@ func (s *Server) Router() http.Handler {
 		api.Get("/discovery", s.discoveryOverview)
 		api.Get("/public/settings", s.publicSettings)
 		api.Get("/albums", s.listAlbums)
+		api.Get("/albums/{albumID}", s.getAlbumDetail)
 		api.Get("/albums/{albumID}/comments", s.listAlbumComments)
 		api.Get("/albums/{albumID}/cover", s.albumCover)
 		api.Get("/tracks", s.listTracks)
@@ -254,9 +255,11 @@ func (s *Server) Router() http.Handler {
 			mgr.Post("/manage/tracks/{trackID}/lyrics", s.manageTrackLyricsUpload)
 			mgr.Post("/manage/tracks/{trackID}/lyrics-plain", s.manageTrackLyricsPlainUpload)
 
+			mgr.Post("/manage/albums-create", s.manageCreateAlbum)
 			mgr.Get("/manage/albums", s.manageListAlbums)
 			mgr.Get("/manage/albums/{albumID}", s.manageGetAlbum)
 			mgr.Patch("/manage/albums/{albumID}", s.manageUpdateAlbum)
+			mgr.Delete("/manage/albums/{albumID}", s.manageDeleteAlbum)
 			mgr.Post("/manage/albums/{albumID}/cover", s.manageAlbumCoverUpload)
 		})
 
@@ -770,6 +773,7 @@ func (s *Server) meBannerUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "creator badge required", http.StatusForbidden)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 104*1024*1024)
 	target, err := s.saveUserBannerFromRequest(r.Context(), r, claims.Subject)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1794,6 +1798,56 @@ func (s *Server) listAlbums(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"albums": albums})
+}
+
+func (s *Server) getAlbumDetail(w http.ResponseWriter, r *http.Request) {
+	albumID, err := strconv.ParseInt(chi.URLParam(r, "albumID"), 10, 64)
+	if err != nil || albumID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	claims, hasClaims := auth.FromContext(r.Context())
+	viewerSub := ""
+	isAdmin := false
+	if hasClaims {
+		viewerSub = claims.Subject
+		isAdmin = auth.HasRole(claims, "admin")
+	}
+	allowed, err := s.canAccessAlbum(r.Context(), viewerSub, isAdmin, albumID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var title, artist, visibility, created, coverPath, ownerSub, uploaderName, genre string
+	if err := s.db.QueryRow(r.Context(), `
+		SELECT a.title, COALESCE(ar.name,''), a.visibility, a.created_at::text, COALESCE(a.cover_path,''), a.owner_sub, COALESCE(NULLIF(up.display_name,''), a.owner_sub), COALESCE(a.genre,'')
+		FROM albums a
+		LEFT JOIN artists ar ON ar.id = a.artist_id
+		LEFT JOIN user_profiles up ON up.user_sub=a.owner_sub
+		WHERE a.id=$1
+	`, albumID).Scan(&title, &artist, &visibility, &created, &coverPath, &ownerSub, &uploaderName, &genre); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            albumID,
+		"title":         title,
+		"artist":        artist,
+		"genre":         genre,
+		"visibility":    visibility,
+		"created_at":    created,
+		"cover_path":    coverPath,
+		"owner_sub":     ownerSub,
+		"uploader_name": uploaderName,
+	})
 }
 
 func (s *Server) recordListeningEvent(w http.ResponseWriter, r *http.Request) {
@@ -4949,6 +5003,66 @@ func (s *Server) manageListAlbums(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"albums": out})
 }
 
+func (s *Server) manageCreateAlbum(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.FromContext(r.Context())
+	allowed, err := s.canUserUpload(r.Context(), claims)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		Title      string `json:"title"`
+		Artist     string `json:"artist"`
+		Visibility string `json:"visibility"`
+		Genre      string `json:"genre"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	title := fallback(strings.TrimSpace(req.Title), "Unknown Album")
+	artist := fallback(strings.TrimSpace(req.Artist), "Unknown Artist")
+	genre := strings.TrimSpace(req.Genre)
+	visibility := "private"
+	if strings.TrimSpace(req.Visibility) == "public" {
+		visibility = "public"
+	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	artistID, err := upsertArtist(r.Context(), tx, artist)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	albumID, err := upsertAlbum(r.Context(), tx, artistID, title, visibility, claims.Subject, genre)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.writeAudit(r.Context(), claims.Subject, "manage.create_album", "album", strconv.FormatInt(albumID, 10), map[string]any{
+		"title":      title,
+		"artist":     artist,
+		"visibility": visibility,
+	})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"status":   "created",
+		"album_id": albumID,
+	})
+}
+
 func (s *Server) manageGetAlbum(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.FromContext(r.Context())
 	albumID, err := strconv.ParseInt(chi.URLParam(r, "albumID"), 10, 64)
@@ -5080,6 +5194,39 @@ func (s *Server) manageUpdateAlbum(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func (s *Server) manageDeleteAlbum(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.FromContext(r.Context())
+	albumID, err := strconv.ParseInt(chi.URLParam(r, "albumID"), 10, 64)
+	if err != nil || albumID <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	allowed, err := s.canManageAlbum(r.Context(), claims, albumID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var trackCount int
+	if err := s.db.QueryRow(r.Context(), `SELECT COUNT(*) FROM tracks WHERE album_id=$1`, albumID).Scan(&trackCount); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if trackCount > 0 {
+		http.Error(w, "album still contains tracks", http.StatusConflict)
+		return
+	}
+	if _, err := s.db.Exec(r.Context(), `DELETE FROM albums WHERE id=$1`, albumID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = s.writeAudit(r.Context(), claims.Subject, "manage.delete_album", "album", strconv.FormatInt(albumID, 10), nil)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) manageAlbumCoverUpload(w http.ResponseWriter, r *http.Request) {
@@ -7220,7 +7367,9 @@ func (s *Server) saveUserAvatarFromRequest(ctx context.Context, r *http.Request,
 }
 
 func (s *Server) saveUserBannerFromRequest(ctx context.Context, r *http.Request, userSub string) (string, error) {
-	if err := r.ParseMultipartForm(12 * 1024 * 1024); err != nil {
+	const maxBannerFileBytes = 100 * 1024 * 1024
+	const maxBannerBodyBytes = 104 * 1024 * 1024
+	if err := r.ParseMultipartForm(maxBannerBodyBytes); err != nil {
 		return "", fmt.Errorf("invalid multipart payload")
 	}
 	f, h, err := r.FormFile("banner")
@@ -7231,9 +7380,12 @@ func (s *Server) saveUserBannerFromRequest(ctx context.Context, r *http.Request,
 
 	ext := strings.ToLower(filepath.Ext(h.Filename))
 	switch ext {
-	case ".jpg", ".jpeg", ".png", ".webp":
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
 	default:
-		return "", fmt.Errorf("banner must be jpg/png/webp")
+		return "", fmt.Errorf("banner must be jpg/png/webp/gif")
+	}
+	if h.Size > maxBannerFileBytes {
+		return "", fmt.Errorf("banner must be 100 MB or smaller")
 	}
 	target := s.store.UserBannerPathWithExt(userSub, strings.TrimPrefix(ext, "."))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -7244,12 +7396,15 @@ func (s *Server) saveUserBannerFromRequest(ctx context.Context, r *http.Request,
 		return "", err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := io.Copy(tmp, io.LimitReader(f, 12*1024*1024)); err != nil {
+	if _, err := io.Copy(tmp, io.LimitReader(f, maxBannerFileBytes+1)); err != nil {
 		_ = tmp.Close()
 		return "", err
 	}
 	if err := tmp.Close(); err != nil {
 		return "", err
+	}
+	if info, err := os.Stat(tmp.Name()); err == nil && info.Size() > maxBannerFileBytes {
+		return "", fmt.Errorf("banner must be 100 MB or smaller")
 	}
 	if err := os.Rename(tmp.Name(), target); err != nil {
 		return "", err

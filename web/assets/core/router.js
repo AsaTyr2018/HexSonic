@@ -21,18 +21,17 @@
       $('searchInput').placeholder = hasAlbumContext ? 'Search songs in this album' : 'Search songs';
     }
     function allowedViewOrDefault(view) {
+      if (view === 'upload' || view === 'user_track_manage' || view === 'admin_track_manage' || view === 'album_manage') view = 'creator_center';
       if (view === 'playlists' && !ns.canCreatePlaylists()) view = 'discovery';
       if (view === 'jukebox' && !state.me) view = 'discovery';
       if (view === 'favorites' && !state.me) view = 'discovery';
       if (view === 'profile' && !state.me) view = 'discovery';
       if ((view === 'admin_users' || view === 'admin_system' || view === 'admin_logs') && !canAdmin()) view = 'discovery';
-      if (view === 'upload' && !canUpload()) view = 'discovery';
-      if ((view === 'user_track_manage' || view === 'admin_track_manage' || view === 'album_manage') && !canManage()) view = 'discovery';
-      if (view === 'admin_track_manage' && !canAdmin()) view = 'discovery';
+      if (view === 'creator_center' && !canUpload()) view = 'discovery';
       if (view === 'jobs' && !canAdmin()) view = 'discovery';
       if (view === 'creator_stats' && !canUpload()) view = 'discovery';
       if (view === 'invite_register' && !state.inviteToken) view = 'discovery';
-      const valid = new Set(['discovery', 'jukebox', 'creators', 'albums', 'tracks', 'playlists', 'favorites', 'profile', 'admin_users', 'admin_system', 'admin_logs', 'track_detail', 'upload', 'user_track_manage', 'admin_track_manage', 'album_manage', 'creator_stats', 'jobs', 'user_profile', 'invite_register']);
+      const valid = new Set(['discovery', 'jukebox', 'creators', 'albums', 'tracks', 'playlists', 'favorites', 'profile', 'admin_users', 'admin_system', 'admin_logs', 'track_detail', 'creator_center', 'user_track_manage', 'admin_track_manage', 'album_manage', 'creator_stats', 'jobs', 'user_profile', 'invite_register']);
       if (!valid.has(view)) view = 'discovery';
       return view;
     }
@@ -42,6 +41,17 @@
       if (!raw) {
         if (state.inviteToken && window.location.pathname.startsWith('/register')) return 'invite_register';
         return 'discovery';
+      }
+      if (raw.startsWith('album/')) {
+        const id = Number(raw.slice('album/'.length));
+        state.selectedAlbum = null;
+        state.tracksAlbumContextID = Number.isFinite(id) && id > 0 ? id : 0;
+        return 'tracks';
+      }
+      if (raw.startsWith('track/')) {
+        const id = decodeURIComponent(raw.slice('track/'.length));
+        state.selectedDetailTrackId = id;
+        return 'track_detail';
       }
       if (raw.startsWith('user_profile/')) {
         const ident = decodeURIComponent(raw.slice('user_profile/'.length));
@@ -69,10 +79,10 @@
     $('viewAdminSystem').classList.toggle('hidden', view !== 'admin_system');
     $('viewAdminLogs').classList.toggle('hidden', view !== 'admin_logs');
     $('viewTrackDetail').classList.toggle('hidden', view !== 'track_detail');
-    $('viewUpload').classList.toggle('hidden', view !== 'upload');
+    $('viewCreatorCenter').classList.toggle('hidden', view !== 'creator_center');
     $('viewCreatorStats').classList.toggle('hidden', view !== 'creator_stats');
-    $('viewTrackManage').classList.toggle('hidden', !(view === 'user_track_manage' || view === 'admin_track_manage'));
-    $('viewAlbumManage').classList.toggle('hidden', view !== 'album_manage');
+    $('viewTrackManage').classList.add('hidden');
+    $('viewAlbumManage').classList.add('hidden');
     $('viewJobs').classList.toggle('hidden', view !== 'jobs');
     $('viewUserProfile').classList.toggle('hidden', view !== 'user_profile');
     $('viewInviteRegister').classList.toggle('hidden', view !== 'invite_register');
@@ -82,9 +92,6 @@
       ns.renderTracks();
     } else {
       syncTracksContextChrome();
-    }
-    if (view === 'user_track_manage' || view === 'admin_track_manage') {
-      ns.applyTrackManageMode(view);
     }
     if (view === 'admin_users' && canAdmin()) {
       ns.loadAdminUsers();
@@ -106,11 +113,18 @@
     if (view === 'jukebox' && state.me) {
       ns.renderJukebox();
     }
+    if (view === 'creator_center' && canUpload()) {
+      ns.loadManageData();
+      if (typeof ns.renderCreatorCenter === 'function') ns.renderCreatorCenter();
+    }
     if (view === 'creator_stats' && canUpload()) {
       ns.loadCreatorStats();
     }
     if (view === 'creators') {
       ns.loadCreatorHighscore();
+    }
+    if (view === 'discovery' && typeof ns.ensureDiscoveryLoaded === 'function') {
+      ns.ensureDiscoveryLoaded();
     }
     if (view === 'jobs' && canAdmin()) {
       ns.loadJobs();
@@ -118,9 +132,14 @@
     if (view === 'user_profile' && state.selectedUserSub) {
       ns.loadPublicUserProfile();
     }
-    const targetHash = (view === 'user_profile' && (state.selectedUserHandle || state.selectedUserSub))
-      ? `#user_profile/${encodeURIComponent(state.selectedUserHandle || state.selectedUserSub)}`
-      : `#${view}`;
+    const targetHash =
+      (view === 'user_profile' && (state.selectedUserHandle || state.selectedUserSub))
+        ? `#user_profile/${encodeURIComponent(state.selectedUserHandle || state.selectedUserSub)}`
+        : (view === 'tracks' && state.selectedAlbum && Number(state.selectedAlbum.id) > 0 && Number(state.tracksAlbumContextID) === Number(state.selectedAlbum.id))
+          ? `#album/${encodeURIComponent(String(state.selectedAlbum.id))}`
+          : (view === 'track_detail' && state.selectedDetailTrackId)
+            ? `#track/${encodeURIComponent(state.selectedDetailTrackId)}`
+            : `#${view}`;
     if (updateHash && window.location.hash !== targetHash) {
       window.location.hash = targetHash.replace(/^#/, '');
     }

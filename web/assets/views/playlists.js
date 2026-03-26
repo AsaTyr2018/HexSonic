@@ -10,6 +10,7 @@ const openUserProfile = (...args) => ns.openUserProfile(...args);
 const renderLyricIndicators = (...args) => ns.renderLyricIndicators(...args);
 const renderRateableStars = (...args) => ns.renderRateableStars(...args);
 const shortVisibility = (...args) => ns.shortVisibility(...args);
+const syncPlayerSideDocks = (...args) => ns.syncPlayerSideDocks(...args);
 
     function canCreatePlaylists() {
       return !!state.me;
@@ -23,6 +24,7 @@ const shortVisibility = (...args) => ns.shortVisibility(...args);
       dock.classList.toggle('open', state.playlistDockOpen);
       toggle.classList.toggle('active', state.playlistDockOpen);
       toggle.textContent = state.playlistDockOpen ? 'Playlists <<' : 'Playlists';
+      syncPlayerSideDocks();
     }
 
     function ownPlaylists() {

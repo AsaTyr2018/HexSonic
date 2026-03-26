@@ -19,6 +19,7 @@
       selectedPublicUserProfile: null,
       selectedPublicUserUploads: { albums: [], tracks: [] },
       selectedPublicUserComments: [],
+      creatorCenterTab: 'overview',
       profileDirty: false,
       profileSaveState: '',
       profileSnapshot: '',
@@ -30,7 +31,7 @@
       manageAlbums: [],
       adminUsers: [],
       adminInvites: [],
-      publicSettings: { registration_enabled: true },
+      publicSettings: { registration_enabled: false },
       adminSystemOverview: null,
       discovery: null,
       discoveryTab: 'top',
@@ -56,6 +57,7 @@
       selectedPlaylistTracks: [],
       playlistPickerTrackIDs: [],
       playlistDockOpen: localStorage.getItem('hex_playlist_dock_open') === '1',
+      manualQueueOpen: localStorage.getItem('hex_manual_queue_open') === '1',
       albumCoverURLs: {},
       currentView: 'discovery',
       albumGenreFilter: 'all',
@@ -66,6 +68,8 @@
         queue: [],
         queueIndex: -1,
         nowPlayingTrackId: '',
+        shuffle: localStorage.getItem('hex_main_shuffle') === '1',
+        repeatMode: localStorage.getItem('hex_main_repeat_mode') || 'off',
         currentLyrics: { track_id: '', plain: '', srt: '', cues: [] }
       },
       jukeboxPlayer: {

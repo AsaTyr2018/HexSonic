@@ -1,5 +1,6 @@
 (function(ns) {
 const { state, $, escapeHtml, headers, apiFetch, setStatus } = ns;
+const PROFILE_BANNER_PLACEHOLDER = '/assets/profile-banner-placeholder.svg';
 const stopNotificationPolling = (...args) => ns.stopNotificationPolling(...args);
 const syncRoleUI = (...args) => ns.syncRoleUI(...args);
 const clearSession = (...args) => ns.clearSession(...args);
@@ -95,7 +96,7 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
     async function loadPublicSettings() {
       const res = await apiFetch('/api/v1/public/settings', { headers: headers() }, false);
       if (!res.ok) {
-        state.publicSettings = { registration_enabled: true };
+        state.publicSettings = { registration_enabled: false };
         syncPublicUI();
         return;
       }
@@ -187,8 +188,8 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
         $('profileBannerPreview').src = p.banner_url;
         $('profileBannerBoxPreview').src = p.banner_url;
       } else {
-        $('profileBannerPreview').removeAttribute('src');
-        $('profileBannerBoxPreview').removeAttribute('src');
+        $('profileBannerPreview').src = PROFILE_BANNER_PLACEHOLDER;
+        $('profileBannerBoxPreview').src = PROFILE_BANNER_PLACEHOLDER;
       }
       $('profilePreviewName').textContent = p.display_name || p.username || 'User';
       $('profilePreviewHandle').textContent = `@${p.username || 'user'}`;
@@ -422,6 +423,9 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
       }
       const res = await apiFetch('/api/v1/me/notifications', { headers: headers() });
       if (!res.ok) {
+        if (res.status === 401) {
+          stopNotificationPolling();
+        }
         state.notifications = [];
         state.notificationsUnread = 0;
         renderNotifications();
@@ -803,6 +807,15 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
         alert('Select a banner file first.');
         return;
       }
+      const name = String(f.name || '').toLowerCase();
+      if (!(/\.(jpg|jpeg|png|webp|gif)$/).test(name)) {
+        alert('Banner must be JPG, PNG, WEBP or GIF.');
+        return;
+      }
+      if (Number(f.size || 0) > (100 * 1024 * 1024)) {
+        alert('Banner must be 100 MB or smaller.');
+        return;
+      }
       const form = new FormData();
       form.append('banner', f);
       const res = await apiFetch('/api/v1/me/banner', {
@@ -811,7 +824,8 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
         body: form
       });
       if (!res.ok) {
-        alert(`Banner upload failed (${res.status}).`);
+        const msg = (await res.text().catch(() => '')).trim();
+        alert(msg || `Banner upload failed (${res.status}).`);
         return;
       }
       $('profileBannerFile').value = '';
@@ -923,9 +937,11 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
       else $('pubUserAvatar').removeAttribute('src');
       if (p.banner_url) {
         $('pubUserBanner').src = p.banner_url;
+        $('pubUserBanner').classList.remove('hidden');
         $('pubUserHero').style.background = 'transparent';
       } else {
-        $('pubUserBanner').removeAttribute('src');
+        $('pubUserBanner').src = PROFILE_BANNER_PLACEHOLDER;
+        $('pubUserBanner').classList.remove('hidden');
         $('pubUserHero').style.background = p.accent_color || '#2d78dd';
       }
       $('pubUserCard').style.borderColor = p.accent_color || '#4a5160';

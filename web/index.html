@@ -4,10 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>HEXSONIC</title>
+    <style>body.booting .app,body.booting .topbar{visibility:hidden;}</style>
     <link rel="stylesheet" href="/assets/app.css" />
 
 </head>
-  <body>
+  <body class="booting">
   <header class="topbar">
     <div class="topbar-brand">
       <div class="brand-mark">HX</div>
@@ -20,7 +21,7 @@
       <div id="topStatus" class="status">Guest mode (public view)</div>
       <button class="btn hidden" id="btnNotifications">Inbox</button>
       <button class="btn" id="btnOpenLogin">Login</button>
-      <button class="btn" id="btnOpenSignup">Registrieren</button>
+      <button class="btn hidden" id="btnOpenSignup">Registrieren</button>
       <button class="btn hidden" id="btnLogout">Logout</button>
     </div>
   </header>
@@ -40,7 +41,7 @@
       </div>
       <div class="nav-group" id="navGroupCreator">
         <div class="nav-title">Creator</div>
-        <button class="nav-item hidden" id="navUpload" data-view="upload">Upload Center</button>
+        <button class="nav-item hidden" id="navCreatorCenter" data-view="creator_center">Creator Center</button>
         <button class="nav-item hidden" id="navCreatorStats" data-view="creator_stats">Creator Stats</button>
       </div>
       <div class="nav-group" id="navGroupAdmin">
@@ -106,9 +107,7 @@
             </div>
             <div class="jukebox-modebar">
               <button class="btn slim active" data-jukebox-mode="for_you">For You</button>
-              <button class="btn slim" data-jukebox-mode="genre">Genre Radio</button>
-              <button class="btn slim" data-jukebox-mode="creator">Creator Radio</button>
-              <button class="btn slim" data-jukebox-mode="album">Album Radio</button>
+              <button class="btn slim" data-jukebox-mode="radio">Radio</button>
               <button class="btn slim" data-jukebox-mode="try_me">Try me!</button>
             </div>
           </div>
@@ -124,9 +123,9 @@
                     <div class="jukebox-dial-label">Mode</div>
                     <div id="jukeboxModeLabel" class="jukebox-dial-value">For You</div>
                   </div>
-                  <div class="jukebox-dial">
-                    <div class="jukebox-dial-label">Lane</div>
-                    <div id="jukeboxLaneLabel" class="jukebox-dial-value">Profile driven</div>
+                    <div class="jukebox-dial">
+                      <div class="jukebox-dial-label">Lane</div>
+                      <div id="jukeboxLaneLabel" class="jukebox-dial-value">Profile driven</div>
                   </div>
                 </div>
                 <div id="jukeboxSessionMeta" class="jukebox-session-note">No active session.</div>
@@ -134,7 +133,7 @@
                   <button class="btn primary" id="btnJukeboxStart">Start session</button>
                   <button class="btn" id="btnJukeboxRefresh">Refresh queue</button>
                 </div>
-                <div class="jukebox-feedback-grid">
+                <div class="jukebox-feedback-grid" id="jukeboxFeedbackControls">
                   <button class="btn slim" id="btnJukeboxMoreLike">More like this</button>
                   <button class="btn slim" id="btnJukeboxLessLike">Less like this</button>
                   <button class="btn slim" id="btnJukeboxStayGenre">Stay in genre</button>
@@ -148,20 +147,14 @@
                 <div class="muted">Start a session to begin.</div>
               </div>
               <div class="jukebox-actions" style="margin-top:10px; gap:8px; flex-wrap:wrap;">
-                <button class="btn" id="btnJukeboxPrev" title="Previous">&#9198;</button>
-                <button class="btn primary" id="btnJukeboxPlayPause" title="Play/Pause">&#9654;</button>
-                <button class="btn" id="btnJukeboxNext" title="Next">&#9197;</button>
-                <button class="btn" id="btnJukeboxMute" title="Mute">&#128266;</button>
                 <button class="btn" id="btnJukeboxPopout" title="Open Jukebox popout">Popout</button>
               </div>
               <div class="timeline-row" style="margin-top:10px;">
                 <span class="timecode" id="jukeboxElapsedLabel">00:00</span>
-                <input id="jukeboxSeekRange" type="range" min="0" max="1000" value="0" />
+                <div class="jukebox-progressbar" aria-hidden="true">
+                  <div id="jukeboxProgressFill" class="jukebox-progressfill"></div>
+                </div>
                 <span class="timecode" id="jukeboxDurationLabel">00:00</span>
-              </div>
-              <div class="jukebox-actions" style="margin-top:8px; align-items:center;">
-                <span class="muted" id="jukeboxVolumeLabel">70%</span>
-                <input id="jukeboxVolumeRange" type="range" min="0" max="100" value="70" style="max-width:220px;" />
               </div>
               <div class="panel-title" style="margin-top:12px;">Up Next</div>
               <div id="jukeboxQueueMeta" class="muted">Start a session to build your Jukebox queue.</div>
@@ -466,7 +459,7 @@
                 <div class="profile-field">
                   <label for="profileBannerFile">Profile banner</label>
                   <input id="profileBannerFile" type="file" accept="image/*" />
-                  <div class="muted">Recommended size: 1600 × 500 px. This becomes the visual header inside your public profile card.</div>
+                  <div class="muted">Recommended size: 1600 × 500 px. JPG, PNG, WEBP or GIF up to 100 MB. This becomes the visual header inside your public profile card.</div>
                   <div class="profile-action-row"><button class="btn" id="btnProfileBannerUpload">Upload banner</button></div>
                 </div>
               </div>
@@ -498,7 +491,7 @@
               <div class="profile-field">
                 <label for="profileJukeboxGenres">Preferred genres</label>
                 <input id="profileJukeboxGenres" placeholder="Example: Viking Rock, Gothic Metal, Industrial Electronic" />
-                <div class="muted">Comma-separated. These boost your For You and Try Me sessions.</div>
+                <div class="muted">Comma-separated. These boost your For You lane and still influence discovery nudges.</div>
               </div>
               <div class="profile-grid-2">
                 <div class="panel">
@@ -675,49 +668,225 @@
         </div>
       </section>
 
-      <section id="viewUpload" class="pane hidden">
-        <div class="upload-layout">
-          <div class="panel">
-            <div class="panel-title">Upload New Track</div>
-            <form id="uploadForm">
-              <div class="upload-grid">
-                <select class="full" id="uploadMode">
-                  <option value="single">Single Track</option>
-                  <option value="album">Album / Multiple Tracks</option>
-                </select>
-                <input class="full" name="title" id="uploadTitle" placeholder="Track title (optional, otherwise from tag/filename)" />
-                <input name="artist" placeholder="Artist" />
-                <input name="album" placeholder="Album" />
-                <input name="genre" placeholder="Genre" />
-                <select name="visibility">
-                  <option value="private">private</option>
-                  <option value="public">public</option>
-                  <option value="followers_only">followers_only</option>
-                  <option value="unlisted">unlisted</option>
-                </select>
-                <input class="full" type="file" id="uploadSingleFile" name="file" accept="audio/*" />
-                <input class="full hidden" type="file" id="uploadAlbumFiles" name="files" accept="audio/*" multiple />
-              </div>
-              <div class="upload-actions">
-                <button class="btn primary" type="submit">Start Upload</button>
-                <button class="btn" type="reset">Reset</button>
-              </div>
-            </form>
-            <div class="upload-note">Upload is available for users with <b>Creator badge</b> and <b>admin</b>. In album mode, non-audio files are ignored automatically. Firefox-safe mode is active (multi-file selection, no folder permission prompt).</div>
+      <section id="viewCreatorCenter" class="pane hidden">
+        <div class="creator-center-shell">
+          <div class="creator-center-head">
+            <div>
+              <div class="panel-title">Creator Center</div>
+              <div id="creatorCenterMeta" class="muted">Upload, organize and refine your releases from one workspace.</div>
+            </div>
+            <div class="creator-center-actions">
+              <button class="btn" id="btnCreatorCenterRefresh">Refresh</button>
+            </div>
           </div>
-          <div class="panel">
-            <div class="panel-title">Upload Status</div>
-            <div id="uploadStatus" class="muted">No upload started yet.</div>
-            <div class="upload-progress-wrap">
-              <div class="upload-progress-bar"><div id="uploadProgressFill" class="upload-progress-fill"></div></div>
-              <div class="upload-progress-meta">
-                <span id="uploadProgressLabel">0%</span>
-                <span id="uploadProgressBytes">0 / 0</span>
+
+          <div class="creator-center-tabs" id="creatorCenterTabs">
+            <button class="btn slim active" data-creator-tab="overview">Overview</button>
+            <button class="btn slim" data-creator-tab="uploads">Uploads</button>
+            <button class="btn slim" data-creator-tab="albums">Albums</button>
+            <button class="btn slim" data-creator-tab="tracks">Tracks</button>
+          </div>
+
+          <section id="creatorCenterTabOverview" class="creator-center-tab">
+            <div id="creatorCenterSummary" class="admin-metrics-grid"></div>
+            <div class="creator-center-grid creator-center-grid-overview">
+              <div class="panel">
+                <div class="panel-title">Release Hygiene</div>
+                <div id="creatorCenterHealth" class="creator-health-list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-title">Quick Actions</div>
+                <div class="creator-quick-actions">
+                  <button class="btn" id="btnCreatorJumpUpload">Open Uploads</button>
+                  <button class="btn" id="btnCreatorJumpAlbums">Manage Albums</button>
+                  <button class="btn" id="btnCreatorJumpTracks">Manage Tracks</button>
+                </div>
+                <div class="upload-note">The Creator Center replaces the old Upload Center and editor islands. New work should happen here.</div>
               </div>
             </div>
-            <div id="uploadBatchResult" class="muted" style="margin-top:8px; white-space: pre-line;"></div>
-            <div class="upload-note">After successful import, transcoding jobs are created automatically.</div>
-          </div>
+          </section>
+
+          <section id="creatorCenterTabUploads" class="creator-center-tab hidden">
+            <div class="creator-center-grid">
+              <div class="panel">
+                <div class="panel-title">Upload New Track</div>
+                <form id="uploadForm">
+                  <div class="upload-grid">
+                    <select class="full" id="uploadMode">
+                      <option value="single">Single Track</option>
+                      <option value="album">Album / Multiple Tracks</option>
+                    </select>
+                    <input class="full" name="title" id="uploadTitle" placeholder="Track title (optional, otherwise from tag/filename)" />
+                    <input name="artist" placeholder="Artist" />
+                    <input name="album" placeholder="Album" />
+                    <input name="genre" placeholder="Genre" />
+                    <select name="visibility">
+                      <option value="private">private</option>
+                      <option value="public">public</option>
+                      <option value="followers_only">followers_only</option>
+                      <option value="unlisted">unlisted</option>
+                    </select>
+                    <input class="full" type="file" id="uploadSingleFile" name="file" accept="audio/*" />
+                    <input class="full hidden" type="file" id="uploadAlbumFiles" name="files" accept="audio/*" multiple />
+                  </div>
+                  <div class="upload-actions">
+                    <button class="btn primary" type="submit">Start Upload</button>
+                    <button class="btn" type="reset">Reset</button>
+                  </div>
+                </form>
+                <div class="upload-note">Album mode ignores non-audio files automatically. Uploads stay in Creator ownership.</div>
+              </div>
+              <div class="panel">
+                <div class="panel-title">Upload Status</div>
+                <div id="uploadStatus" class="muted">No upload started yet.</div>
+                <div class="upload-progress-wrap">
+                  <div class="upload-progress-bar"><div id="uploadProgressFill" class="upload-progress-fill"></div></div>
+                  <div class="upload-progress-meta">
+                    <span id="uploadProgressLabel">0%</span>
+                    <span id="uploadProgressBytes">0 / 0</span>
+                  </div>
+                </div>
+                <div id="uploadBatchResult" class="muted" style="margin-top:8px; white-space: pre-line;"></div>
+                <div class="upload-note">After successful import, transcoding jobs are created automatically.</div>
+              </div>
+            </div>
+          </section>
+
+          <section id="creatorCenterTabAlbums" class="creator-center-tab hidden">
+            <div class="creator-center-grid">
+              <div class="panel">
+                <div class="panel-title">Create Album</div>
+                <div class="creator-inline-form">
+                  <input id="creatorCreateAlbumTitle" placeholder="Album title" />
+                  <input id="creatorCreateAlbumArtist" placeholder="Artist / Interpret" />
+                  <input id="creatorCreateAlbumGenre" placeholder="Genre" />
+                  <select id="creatorCreateAlbumVisibility">
+                    <option value="private">private</option>
+                    <option value="public">public</option>
+                  </select>
+                  <button class="btn primary" id="btnCreatorCreateAlbum">Create Album</button>
+                </div>
+                <div id="creatorCreateAlbumStatus" class="muted" style="margin-top:8px;">Create a release shell before assigning tracks.</div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-title">Album Editor</div>
+                <div class="muted" id="albumTargetLabel">No album selected.</div>
+                <div class="creator-form-grid" style="margin-top:10px;">
+                  <input id="albumEditTitle" placeholder="Album title" />
+                  <input id="albumEditArtist" placeholder="Artist / Interpret" />
+                  <input id="albumEditGenre" placeholder="Genre" />
+                  <select id="albumEditVisibility">
+                    <option value="public">public</option>
+                    <option value="private">private</option>
+                  </select>
+                </div>
+                <div class="track-manage-actions">
+                  <button class="btn" id="btnAlbumSaveMeta">Save album metadata</button>
+                  <button class="btn danger" id="btnAlbumDelete">Delete empty album</button>
+                </div>
+                <div class="track-manage-actions" style="margin-top:10px;">
+                  <input id="albumCoverFile" type="file" accept="image/*" />
+                  <button class="btn" id="btnAlbumUploadCover">Upload album cover</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-title">Your Albums</div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width:42px">#</th>
+                      <th>Title</th>
+                      <th style="width:180px">Artist</th>
+                      <th style="width:140px">Genre</th>
+                      <th style="width:90px">Tracks</th>
+                      <th style="width:120px">Visibility</th>
+                      <th style="width:150px">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="creatorAlbumsBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section id="creatorCenterTabTracks" class="creator-center-tab hidden">
+            <div class="creator-center-grid">
+              <div class="panel">
+                <div class="panel-title">Track Editor</div>
+                <div class="muted" id="adminTargetLabel">No track selected.</div>
+                <div class="track-manage-grid-3" style="margin-top:10px;">
+                  <input id="trackEditTitle" placeholder="Title" />
+                  <input id="trackEditArtist" placeholder="Artist / Interpret" />
+                  <input id="trackEditAlbum" placeholder="Album" />
+                </div>
+                <div class="track-manage-grid-3">
+                  <input id="trackEditGenre" placeholder="Genre" />
+                  <select id="adminVisibility">
+                    <option value="public">public</option>
+                    <option value="private">private</option>
+                    <option value="followers_only">followers_only</option>
+                    <option value="unlisted">unlisted</option>
+                  </select>
+                  <div></div>
+                </div>
+                <div class="track-manage-actions">
+                  <button class="btn" id="btnTrackSaveMeta">Save Metadata</button>
+                  <button class="btn danger" id="btnAdminDeleteTrack">Delete Track</button>
+                </div>
+
+                <div class="track-manage-grid-2">
+                  <div>
+                    <div class="muted" style="font-size:12px; margin-bottom:6px;">Cover</div>
+                    <div class="track-manage-actions">
+                      <input id="trackCoverFile" type="file" accept="image/*" />
+                      <button class="btn" id="btnTrackUploadCover">Upload Cover</button>
+                    </div>
+                  </div>
+                  <div>
+                    <div class="muted" style="font-size:12px; margin-bottom:6px;">Lyrics Upload</div>
+                    <div class="track-manage-actions">
+                      <input id="trackLyricsFile" type="file" accept=".srt,text/plain" />
+                      <button class="btn" id="btnTrackUploadLyrics">Upload .srt</button>
+                      <input id="trackLyricsPlainFile" type="file" accept=".txt,text/plain" />
+                      <button class="btn" id="btnTrackUploadLyricsPlain">Upload .txt</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <div class="muted" style="font-size:12px; margin-bottom:6px;">Lyrics (SRT)</div>
+                  <textarea id="trackEditLyrics" rows="6" style="width:100%;" placeholder="Lyrics in SRT format (timestamped)"></textarea>
+                </div>
+                <div>
+                  <div class="muted" style="font-size:12px; margin-bottom:6px;">Lyrics (Plain Text)</div>
+                  <textarea id="trackEditLyricsPlain" rows="8" style="width:100%;" placeholder="Lyrics in plain text"></textarea>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-title">Your Tracks</div>
+                <div class="table-wrap creator-tracks-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Title</th>
+                        <th style="width:180px">Album</th>
+                        <th style="width:130px">Genre</th>
+                        <th style="width:110px">Lyrics</th>
+                        <th style="width:120px">Visibility</th>
+                        <th style="width:150px">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody id="creatorTracksBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
 
@@ -745,64 +914,9 @@
       </section>
 
       <section id="viewTrackManage" class="pane hidden">
-        <div class="track-manage-layout">
-          <div class="panel track-manage-editor">
-            <div class="panel-title" id="trackManageTitle">Track Editor</div>
-            <div class="muted" id="trackManageHint">Select a song in Songs view via button `M` to edit.</div>
-            <div id="trackManageAdminTools" class="track-manage-actions hidden">
-              <input id="trackLoadID" placeholder="Track ID (UUID)" />
-              <button class="btn" id="btnTrackLoadID">Load by ID</button>
-            </div>
-            <div class="muted" id="adminTargetLabel">No track selected.</div>
-
-            <div class="track-manage-grid-3">
-              <input id="trackEditTitle" placeholder="Title" />
-              <input id="trackEditArtist" placeholder="Artist / Interpret" />
-              <input id="trackEditAlbum" placeholder="Album" />
-            </div>
-            <div class="track-manage-grid-3">
-              <input id="trackEditGenre" placeholder="Genre" />
-              <select id="adminVisibility">
-                <option value="public">public</option>
-                <option value="private">private</option>
-                <option value="followers_only">followers_only</option>
-                <option value="unlisted">unlisted</option>
-              </select>
-              <div></div>
-            </div>
-            <div class="track-manage-actions">
-              <button class="btn" id="btnTrackSaveMeta">Save Metadata</button>
-              <button class="btn danger" id="btnAdminDeleteTrack">Delete Track</button>
-            </div>
-
-            <div class="track-manage-grid-2">
-              <div>
-                <div class="muted" style="font-size:12px; margin-bottom:6px;">Cover</div>
-                <div class="track-manage-actions">
-                  <input id="trackCoverFile" type="file" accept="image/*" />
-                  <button class="btn" id="btnTrackUploadCover">Upload Cover</button>
-                </div>
-              </div>
-              <div>
-                <div class="muted" style="font-size:12px; margin-bottom:6px;">Lyrics Upload</div>
-                <div class="track-manage-actions">
-                  <input id="trackLyricsFile" type="file" accept=".srt,text/plain" />
-                  <button class="btn" id="btnTrackUploadLyrics">Upload .srt</button>
-                  <input id="trackLyricsPlainFile" type="file" accept=".txt,text/plain" />
-                  <button class="btn" id="btnTrackUploadLyricsPlain">Upload .txt</button>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div class="muted" style="font-size:12px; margin-bottom:6px;">Lyrics (SRT)</div>
-              <textarea id="trackEditLyrics" rows="6" style="width:100%;" placeholder="Lyrics in SRT format (timestamped)"></textarea>
-            </div>
-            <div>
-              <div class="muted" style="font-size:12px; margin-bottom:6px;">Lyrics (Plain Text)</div>
-              <textarea id="trackEditLyricsPlain" rows="8" style="width:100%;" placeholder="Lyrics in plain text"></textarea>
-            </div>
-          </div>
+        <div class="panel">
+          <div class="panel-title">Track Editor moved</div>
+          <div class="muted">Track management now lives in Creator Center.</div>
         </div>
       </section>
 
@@ -932,42 +1046,9 @@
       </section>
 
       <section id="viewAlbumManage" class="pane hidden">
-        <div class="admin-layout">
-          <div class="panel">
-            <div class="panel-title">Album Metadata</div>
-            <div class="muted" id="albumTargetLabel">No album selected.</div>
-            <div class="admin-controls" style="margin-top:10px;">
-              <input id="albumEditTitle" placeholder="Album title" />
-              <input id="albumEditArtist" placeholder="Artist / Interpret" />
-              <input id="albumEditGenre" placeholder="Genre" />
-              <select id="albumEditVisibility">
-                <option value="public">public</option>
-                <option value="private">private</option>
-              </select>
-              <button class="btn" id="btnAlbumSaveMeta">Save album metadata</button>
-            </div>
-            <div class="admin-controls" style="margin-top:10px;">
-              <input id="albumCoverFile" type="file" accept="image/*" />
-              <button class="btn" id="btnAlbumUploadCover">Upload album cover</button>
-            </div>
-          </div>
-          <div class="panel">
-            <div class="panel-title">Manage Albums</div>
-            <table>
-              <thead>
-                <tr>
-                  <th style="width:38px">#</th>
-                  <th>Title</th>
-                  <th style="width:180px">Artist</th>
-                  <th style="width:120px">Genre</th>
-                  <th style="width:100px">Tracks</th>
-                  <th style="width:120px">Visibility</th>
-                  <th style="width:110px">Action</th>
-                </tr>
-              </thead>
-              <tbody id="manageAlbumsBody"></tbody>
-            </table>
-          </div>
+        <div class="panel">
+          <div class="panel-title">Album Editor moved</div>
+          <div class="muted">Album management now lives in Creator Center.</div>
         </div>
       </section>
 
@@ -1016,6 +1097,21 @@
       <div class="muted" id="playlistDockMeta">No playlist selected.</div>
     </div>
     <div id="playlistDockBody" class="playlist-dock-body"></div>
+  </aside>
+
+  <button class="btn playlist-dock-toggle hidden" id="btnManualQueueToggle" style="top:auto; bottom:96px;">Queue</button>
+  <aside id="manualQueueDock" class="playlist-dock hidden">
+    <div class="playlist-dock-head">
+      <div class="playlist-dock-title-row">
+        <div class="playlist-dock-title">Current Queue</div>
+        <button class="btn slim" id="btnManualQueueClose">Close</button>
+      </div>
+      <div class="playlist-dock-controls" style="grid-template-columns: 1fr auto;">
+        <div class="muted" id="manualQueueMeta">No manual queue active.</div>
+        <button class="btn slim" id="btnManualQueueClear">Clear</button>
+      </div>
+    </div>
+    <div id="manualQueueBody" class="playlist-dock-body"></div>
   </aside>
 
   <div id="inviteModalOverlay" class="modal-overlay hidden">
@@ -1088,9 +1184,11 @@
     <div class="player-center">
       <div class="player-topline">
         <div class="controls">
+          <button class="btn" id="btnShuffle" title="Shuffle">⇄</button>
           <button class="btn" id="btnPrev" title="Previous">&#9198;</button>
           <button class="btn primary" id="btnPlayPause" title="Play/Pause">&#9654;</button>
           <button class="btn" id="btnNext" title="Next">&#9197;</button>
+          <button class="btn" id="btnRepeat" title="Repeat">↻</button>
         </div>
         <div class="player-audio-cluster">
           <button class="btn player-mute-btn" id="btnMute" title="Mute audio" aria-label="Mute audio">&#128266;</button>
@@ -1140,9 +1238,11 @@
         <div id="popTitle" class="pop-title">Nothing playing</div>
         <div id="popSub" class="pop-sub">Open this from the main player.</div>
         <div class="pop-controls">
+          <button class="btn" id="popShuffle" title="Shuffle">⇄</button>
           <button class="btn" id="popPrev">&#9198;</button>
           <button class="btn primary" id="popPlayPause">&#9654;</button>
           <button class="btn" id="popNext">&#9197;</button>
+          <button class="btn" id="popRepeat" title="Repeat">↻</button>
           <button class="btn" id="popMute">&#8857;</button>
           <select id="popEqPreset">
             <option value="flat">EQ: Flat</option>
@@ -1211,20 +1311,16 @@
         <div id="jukePopTitle" class="pop-title">Nothing playing</div>
         <div id="jukePopSub" class="pop-sub">Start a Jukebox session.</div>
         <div class="pop-controls">
-          <button class="btn" id="jukePopPrev">&#9198;</button>
-          <button class="btn primary" id="jukePopPlayPause">&#9654;</button>
-          <button class="btn" id="jukePopNext">&#9197;</button>
-          <button class="btn" id="jukePopMute">&#8857;</button>
         </div>
         <div class="pop-timeline">
           <span id="jukePopElapsed" class="timecode">00:00</span>
-          <input id="jukePopSeek" type="range" min="0" max="1000" value="0" />
+          <div class="jukebox-progressbar" aria-hidden="true">
+            <div id="jukePopProgressFill" class="jukebox-progressfill"></div>
+          </div>
           <span id="jukePopDuration" class="timecode">00:00</span>
         </div>
       </div>
       <div class="pop-toolbar">
-        <span class="muted">Vol</span>
-        <input id="jukePopVolume" type="range" min="0" max="100" value="70" />
         <button class="btn" id="jukePopClose">Close</button>
       </div>
     </div>
@@ -1235,13 +1331,6 @@
           <span class="muted" id="jukePopQueueMeta">No active session.</span>
         </div>
         <div id="jukePopQueue" class="pop-queue"></div>
-      </div>
-      <div class="pop-panel">
-        <div class="pop-panel-head">
-          <span>Why this track</span>
-          <span class="muted" id="jukePopMode">Jukebox</span>
-        </div>
-        <div id="jukePopReason" class="muted" style="padding:10px;">Start a session to begin.</div>
       </div>
     </div>
   </section>
@@ -1257,6 +1346,7 @@
     <script src="/assets/views/admin.js"></script>
     <script src="/assets/views/discovery.js"></script>
     <script src="/assets/views/jukebox.js"></script>
+    <script src="/assets/views/creator-center.js"></script>
     <script src="/assets/app.js"></script>
 
 </body>

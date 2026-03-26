@@ -175,6 +175,14 @@ const canUpload = (...args) => ns.canUpload(...args);
       renderDiscovery();
     }
 
+    async function ensureDiscoveryLoaded(force = false) {
+      if (!force && state.discovery) {
+        renderDiscovery();
+        return;
+      }
+      await loadDiscovery();
+    }
+
     function renderCreatorStats() {
       const data = state.creatorStats || {};
       const ov = data.overview || {};
@@ -267,6 +275,7 @@ Object.assign(window.HexSonic, {
       bindDiscoveryActions,
       renderDiscovery,
       loadDiscovery,
+      ensureDiscoveryLoaded,
       renderCreatorStats,
       loadCreatorStats
 });

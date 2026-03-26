@@ -123,6 +123,11 @@ type recentConstraints struct {
 	SessionTrackID map[string]bool
 }
 
+type albumSeedContext struct {
+	Artist string
+	Genres []string
+}
+
 const jukeboxTargetQueueSize = 6
 
 func New(cfg config.Config, db *pgxpool.Pool) *Service {
@@ -355,27 +360,17 @@ func (s *Service) Next(ctx context.Context, userSub string, req NextRequest) (Se
 	}
 	if req.CurrentPosition > 0 {
 		_, _ = s.db.Exec(ctx, `
-			UPDATE jukebox_session_tracks
-			SET played_at = COALESCE(played_at, now())
-			WHERE session_id=$1 AND position <= $2
-		`, state.ID, req.CurrentPosition)
-	}
-	if req.CurrentPosition > 0 {
-		_, _ = s.db.Exec(ctx, `
-			DELETE FROM jukebox_session_tracks
-			WHERE session_id=$1 AND position <= $2
-		`, state.ID, req.CurrentPosition)
-		_, _ = s.db.Exec(ctx, `
-			WITH reordered AS (
-				SELECT ctid, row_number() OVER (ORDER BY position) AS new_position
+			UPDATE jukebox_session_tracks jst
+			SET played_at = COALESCE(jst.played_at, now())
+			WHERE jst.id IN (
+				SELECT id
 				FROM jukebox_session_tracks
 				WHERE session_id=$1
+				  AND played_at IS NULL
+				ORDER BY created_at, id
+				LIMIT $2
 			)
-			UPDATE jukebox_session_tracks jst
-			SET position = reordered.new_position
-			FROM reordered
-			WHERE jst.ctid = reordered.ctid
-		`, state.ID)
+		`, state.ID, req.CurrentPosition)
 	}
 	targetSize := jukeboxTargetQueueSize
 	if err := s.ensureQueue(ctx, &state, targetSize); err != nil {
@@ -482,7 +477,7 @@ func (s *Service) loadSession(ctx context.Context, userSub, sessionID string) (s
 func (s *Service) snapshot(ctx context.Context, state sessionState) (SessionSnapshot, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT
-			jst.position,
+			row_number() OVER (ORDER BY jst.created_at, jst.id)::int AS position,
 			t.id::text,
 			t.title,
 			COALESCE(ar.name,'') AS artist,
@@ -500,8 +495,10 @@ func (s *Service) snapshot(ctx context.Context, state sessionState) (SessionSnap
 		LEFT JOIN albums al ON al.id=t.album_id
 		LEFT JOIN user_profiles up ON up.user_sub=t.owner_sub
 		WHERE jst.session_id=$1
-		ORDER BY jst.position
-	`, state.ID)
+		  AND jst.played_at IS NULL
+		ORDER BY jst.created_at, jst.id
+		LIMIT $2
+	`, state.ID, jukeboxTargetQueueSize)
 	if err != nil {
 		return SessionSnapshot{}, err
 	}
@@ -528,6 +525,15 @@ func (s *Service) snapshot(ctx context.Context, state sessionState) (SessionSnap
 		queue = append(queue, item)
 	}
 	_, _ = s.db.Exec(ctx, `UPDATE jukebox_sessions SET updated_at=now(), last_activity_at=now() WHERE id=$1`, state.ID)
+	controls := map[string]bool{
+		"skip": true,
+	}
+	if state.Mode != "radio" {
+		controls["more_like_this"] = true
+		controls["less_like_this"] = true
+		controls["stay_in_genre"] = true
+		controls["surprise_me"] = true
+	}
 	return SessionSnapshot{
 		SessionID:      state.ID.String(),
 		Mode:           state.Mode,
@@ -537,30 +543,19 @@ func (s *Service) snapshot(ctx context.Context, state sessionState) (SessionSnap
 		Summary:        buildSummary(state),
 		Options:        state.Options,
 		Queue:          queue,
-		Controls: map[string]bool{
-			"more_like_this": true,
-			"less_like_this": true,
-			"stay_in_genre":  true,
-			"surprise_me":    true,
-			"skip":           true,
-		},
+		Controls:       controls,
 	}, nil
 }
 
 func (s *Service) ensureQueue(ctx context.Context, state *sessionState, desiredTotal int) error {
 	var existingTotal int
-	if err := s.db.QueryRow(ctx, `SELECT COUNT(*)::int FROM jukebox_session_tracks WHERE session_id=$1`, state.ID).Scan(&existingTotal); err != nil {
+	if err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*)::int
+		FROM jukebox_session_tracks
+		WHERE session_id=$1
+		  AND played_at IS NULL
+	`, state.ID).Scan(&existingTotal); err != nil {
 		return err
-	}
-	if existingTotal > desiredTotal {
-		if _, err := s.db.Exec(ctx, `
-			DELETE FROM jukebox_session_tracks
-			WHERE session_id=$1
-			  AND position > $2
-		`, state.ID, desiredTotal); err != nil {
-			return err
-		}
-		existingTotal = desiredTotal
 	}
 	if existingTotal >= desiredTotal {
 		return nil
@@ -588,6 +583,15 @@ func (s *Service) ensureQueue(ctx context.Context, state *sessionState, desiredT
 	if state.Mode == "album" && state.SeedAlbumID > 0 && strings.TrimSpace(state.SeedGenre) == "" {
 		state.SeedGenre, _ = s.albumGenre(ctx, state.SeedAlbumID)
 	}
+	if state.Mode == "creator" && strings.TrimSpace(state.SeedGenre) == "" {
+		if genres := dominantGenresForCreator(candidates, state.SeedCreatorSub, 1); len(genres) > 0 {
+			state.SeedGenre = genres[0]
+		}
+	}
+	candidates = filterCandidatesForMode(candidates, *state, profile)
+	if len(candidates) == 0 {
+		return nil
+	}
 	scored := rankCandidates(candidates, *state, profile, policy, recent)
 	if len(scored) == 0 {
 		relaxedCreators := recent
@@ -601,21 +605,215 @@ func (s *Service) ensureQueue(ctx context.Context, state *sessionState, desiredT
 		scored = rankCandidates(candidates, *state, profile, policy, relaxedTracks)
 	}
 	picks := diversifyTracks(scored, needed, state.Mode)
-	nextPos := existingTotal + 1
 	for _, pick := range picks {
-		if _, err := s.db.Exec(ctx, `
+		tag, err := s.db.Exec(ctx, `
 			INSERT INTO jukebox_session_tracks(session_id, position, track_id, score, reason, created_at)
-			VALUES($1, $2, $3::uuid, $4, $5, now())
-			ON CONFLICT (session_id, track_id) DO NOTHING
-		`, state.ID, nextPos, pick.ID, pick.Score, pick.Reason); err != nil {
+			VALUES($1, 0, $2::uuid, $3, $4, now())
+			ON CONFLICT DO NOTHING
+		`, state.ID, pick.ID, pick.Score, pick.Reason)
+		if err != nil {
 			return err
+		}
+		if tag.RowsAffected() == 0 {
+			continue
 		}
 		recent.SessionTrackID[pick.ID] = true
 		recent.TrackCounts[pick.ID]++
 		recent.CreatorCounts[pick.OwnerSub]++
-		nextPos++
 	}
 	return nil
+}
+
+func filterCandidatesForMode(candidates []candidateTrack, state sessionState, profile tasteProfile) []candidateTrack {
+	switch state.Mode {
+	case "genre":
+		out := make([]candidateTrack, 0, len(candidates))
+		for _, c := range candidates {
+			if genreMatchStrength(state.SeedGenre, c.Genre) > 0 {
+				out = append(out, c)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+		return candidates
+	case "creator":
+		seedGenres := dominantGenresForCreator(candidates, state.SeedCreatorSub, 3)
+		out := make([]candidateTrack, 0, len(candidates))
+		for _, c := range candidates {
+			if c.OwnerSub == state.SeedCreatorSub {
+				out = append(out, c)
+				continue
+			}
+			if matchesAnyGenre(seedGenres, c.Genre) {
+				out = append(out, c)
+				continue
+			}
+			if c.OwnerSub != "" && profile.CreatorSignals[c.OwnerSub] > 0 {
+				out = append(out, c)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+		return candidates
+	case "album":
+		ctx := seedAlbumContext(candidates, state.SeedAlbumID)
+		out := make([]candidateTrack, 0, len(candidates))
+		for _, c := range candidates {
+			if c.AlbumID == state.SeedAlbumID {
+				out = append(out, c)
+				continue
+			}
+			if ctx.Artist != "" && strings.EqualFold(strings.TrimSpace(c.Artist), ctx.Artist) {
+				out = append(out, c)
+				continue
+			}
+			if matchesAnyGenre(ctx.Genres, c.Genre) {
+				out = append(out, c)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+		return candidates
+	case "try_me":
+		playCounts := make([]int64, 0, len(candidates))
+		for _, c := range candidates {
+			playCounts = append(playCounts, c.Plays)
+		}
+		if len(playCounts) == 0 {
+			return candidates
+		}
+		slices.Sort(playCounts)
+		threshold := playCounts[min(len(playCounts)-1, max(0, int(float64(len(playCounts))*0.20)))]
+		out := make([]candidateTrack, 0, len(candidates))
+		for _, c := range candidates {
+			if c.Plays <= threshold || c.RecentScore <= 2 {
+				out = append(out, c)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+		return candidates
+	default:
+		return candidates
+	}
+}
+
+func dominantGenresForCreator(candidates []candidateTrack, creatorSub string, limit int) []string {
+	if strings.TrimSpace(creatorSub) == "" || limit <= 0 {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, c := range candidates {
+		if c.OwnerSub != creatorSub {
+			continue
+		}
+		g := strings.ToLower(strings.TrimSpace(c.Genre))
+		if g == "" {
+			continue
+		}
+		counts[g]++
+	}
+	type pair struct {
+		genre string
+		count int
+	}
+	items := make([]pair, 0, len(counts))
+	for genre, count := range counts {
+		items = append(items, pair{genre: genre, count: count})
+	}
+	slices.SortFunc(items, func(a, b pair) int {
+		if a.count == b.count {
+			return strings.Compare(a.genre, b.genre)
+		}
+		if a.count > b.count {
+			return -1
+		}
+		return 1
+	})
+	out := make([]string, 0, min(limit, len(items)))
+	for i := 0; i < len(items) && i < limit; i++ {
+		out = append(out, items[i].genre)
+	}
+	return out
+}
+
+func seedAlbumContext(candidates []candidateTrack, albumID int64) albumSeedContext {
+	out := albumSeedContext{Genres: []string{}}
+	if albumID <= 0 {
+		return out
+	}
+	genres := map[string]bool{}
+	for _, c := range candidates {
+		if c.AlbumID != albumID {
+			continue
+		}
+		if out.Artist == "" && strings.TrimSpace(c.Artist) != "" {
+			out.Artist = strings.TrimSpace(c.Artist)
+		}
+		g := strings.ToLower(strings.TrimSpace(c.Genre))
+		if g != "" {
+			genres[g] = true
+		}
+	}
+	for genre := range genres {
+		out.Genres = append(out.Genres, genre)
+	}
+	slices.Sort(out.Genres)
+	return out
+}
+
+func matchesAnyGenre(seeds []string, candidate string) bool {
+	for _, seed := range seeds {
+		if genreMatchStrength(seed, candidate) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func genreMatchStrength(seed, candidate string) float64 {
+	seedKey := strings.ToLower(strings.TrimSpace(seed))
+	candidateKey := strings.ToLower(strings.TrimSpace(candidate))
+	if seedKey == "" || candidateKey == "" {
+		return 0
+	}
+	if seedKey == candidateKey {
+		return 1
+	}
+	seedTokens := genreTokens(seedKey)
+	candidateTokens := genreTokens(candidateKey)
+	if len(seedTokens) == 0 || len(candidateTokens) == 0 {
+		return 0
+	}
+	common := 0
+	for token := range seedTokens {
+		if candidateTokens[token] {
+			common++
+		}
+	}
+	if common == 0 {
+		return 0
+	}
+	shorter := min(len(seedTokens), len(candidateTokens))
+	return float64(common) / float64(shorter)
+}
+
+func genreTokens(value string) map[string]bool {
+	fields := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(value)), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	out := map[string]bool{}
+	for _, field := range fields {
+		if len(field) < 3 {
+			continue
+		}
+		out[field] = true
+	}
+	return out
 }
 
 func (s *Service) inferSeedGenre(ctx context.Context, profile tasteProfile) (string, error) {
@@ -1042,57 +1240,82 @@ func diversifyTracks(scored []scoredTrack, needed int, mode string) []scoredTrac
 	picks := make([]scoredTrack, 0, min(len(pool), needed))
 	recentAlbums := make([]int64, 0, 4)
 	recentGenres := make([]string, 0, 4)
+	albumPickCounts := map[int64]int{}
+	maxPerAlbum := 2
+	if mode == "album" {
+		maxPerAlbum = 3
+	}
 	for len(picks) < needed && len(pool) > 0 {
-		bestIdx := -1
-		bestScore := -math.MaxFloat64
-		window := min(len(pool), 20)
-		for i := 0; i < window; i++ {
-			item := pool[i]
-			adjusted := item.Score
-			albumRepeats := countRecentAlbum(recentAlbums, item.AlbumID)
-			genreRepeats := countRecentGenre(recentGenres, item.Genre)
-			lastAlbumID := int64(0)
-			if len(recentAlbums) > 0 {
-				lastAlbumID = recentAlbums[len(recentAlbums)-1]
-			}
-			if item.AlbumID > 0 {
-				if lastAlbumID > 0 && item.AlbumID == lastAlbumID {
-					adjusted -= 12
-				}
-				switch albumRepeats {
-				case 1:
-					adjusted -= 7
-				case 2:
-					adjusted -= 14
-				default:
-					if albumRepeats >= 3 {
-						adjusted -= 24
-					}
-				}
-			}
-			if genreRepeats >= 1 {
-				adjusted -= 2.2 * float64(genreRepeats)
-			}
-			if mode == "album" && item.AlbumID > 0 && len(picks) > 0 {
-				if item.AlbumID == recentAlbums[len(recentAlbums)-1] {
-					adjusted -= 16
-				}
-			}
-			if adjusted > bestScore {
-				bestScore = adjusted
-				bestIdx = i
-			}
+		bestIdx := pickDiversifiedTrack(pool, recentAlbums, recentGenres, albumPickCounts, mode, maxPerAlbum, true)
+		if bestIdx < 0 {
+			bestIdx = pickDiversifiedTrack(pool, recentAlbums, recentGenres, albumPickCounts, mode, maxPerAlbum, false)
 		}
 		if bestIdx < 0 {
 			bestIdx = 0
 		}
 		pick := pool[bestIdx]
 		picks = append(picks, pick)
+		if pick.AlbumID > 0 {
+			albumPickCounts[pick.AlbumID]++
+		}
 		recentAlbums = appendWindowInt64(recentAlbums, pick.AlbumID, 4)
 		recentGenres = appendWindowString(recentGenres, pick.Genre, 4)
 		pool = append(pool[:bestIdx], pool[bestIdx+1:]...)
 	}
 	return picks
+}
+
+func pickDiversifiedTrack(pool []scoredTrack, recentAlbums []int64, recentGenres []string, albumPickCounts map[int64]int, mode string, maxPerAlbum int, enforceCap bool) int {
+	bestIdx := -1
+	bestScore := -math.MaxFloat64
+	window := min(len(pool), 20)
+	lastAlbumID := int64(0)
+	if len(recentAlbums) > 0 {
+		lastAlbumID = recentAlbums[len(recentAlbums)-1]
+	}
+	for i := 0; i < window; i++ {
+		item := pool[i]
+		if item.AlbumID > 0 && enforceCap {
+			if albumPickCounts[item.AlbumID] >= maxPerAlbum {
+				continue
+			}
+			if lastAlbumID > 0 && item.AlbumID == lastAlbumID && len(pool) > 1 {
+				continue
+			}
+		}
+		adjusted := item.Score
+		albumRepeats := countRecentAlbum(recentAlbums, item.AlbumID)
+		genreRepeats := countRecentGenre(recentGenres, item.Genre)
+		if item.AlbumID > 0 {
+			if lastAlbumID > 0 && item.AlbumID == lastAlbumID {
+				adjusted -= 18
+			}
+			switch albumRepeats {
+			case 1:
+				adjusted -= 10
+			case 2:
+				adjusted -= 18
+			default:
+				if albumRepeats >= 3 {
+					adjusted -= 30
+				}
+			}
+			if albumPickCounts[item.AlbumID] >= 1 {
+				adjusted -= 8 * float64(albumPickCounts[item.AlbumID])
+			}
+		}
+		if genreRepeats >= 1 {
+			adjusted -= 2.8 * float64(genreRepeats)
+		}
+		if mode == "album" && item.AlbumID > 0 && lastAlbumID > 0 && item.AlbumID == lastAlbumID {
+			adjusted -= 14
+		}
+		if adjusted > bestScore {
+			bestScore = adjusted
+			bestIdx = i
+		}
+	}
+	return bestIdx
 }
 
 func countRecentAlbum(items []int64, albumID int64) int {
@@ -1144,43 +1367,59 @@ func scoreCandidate(c candidateTrack, state sessionState, profile tasteProfile, 
 	preference := profile.PreferredGenres[genreKey] + (profile.GenreSignals[genreKey] * 0.18) + (profile.CreatorSignals[c.OwnerSub] * 0.08) + (profile.AlbumSignals[c.AlbumID] * 0.12)
 	modeBonus := 0.0
 	reason := "Taste-aligned rotation"
+	if state.Mode == "radio" {
+		preference = 0
+	}
 
 	switch state.Mode {
 	case "for_you":
 		reason = "Based on your listening"
+	case "radio":
+		base = (float64(minInt64(c.Plays, 200)) * 0.11) + (c.Rating * 1.1) + (c.RecentScore * 1.45)
+		modeBonus += 4
+		reason = "Radio rotation: most played now"
 	case "genre":
-		if !strings.EqualFold(strings.TrimSpace(state.SeedGenre), strings.TrimSpace(c.Genre)) {
+		match := genreMatchStrength(state.SeedGenre, c.Genre)
+		if match <= 0 {
 			return 0, "", false
 		}
-		modeBonus += 6
-		reason = fmt.Sprintf("Genre radio: %s", strings.TrimSpace(c.Genre))
+		if strings.EqualFold(strings.TrimSpace(state.SeedGenre), strings.TrimSpace(c.Genre)) {
+			modeBonus += 7
+			reason = fmt.Sprintf("Genre radio core: %s", strings.TrimSpace(c.Genre))
+		} else {
+			modeBonus += 3.5 * match
+			reason = fmt.Sprintf("Genre-adjacent: %s", strings.TrimSpace(c.Genre))
+		}
 	case "creator":
 		if state.SeedCreatorSub == "" {
 			return 0, "", false
 		}
 		if c.OwnerSub == state.SeedCreatorSub {
-			modeBonus += 7
+			modeBonus += 8
 			reason = "From the selected creator"
 		} else {
-			modeBonus += profile.CreatorSignals[state.SeedCreatorSub] * 0.05
-			reason = "Adjacent to the selected creator"
+			creatorAdjacency := profile.CreatorSignals[c.OwnerSub] * 0.06
+			genreAdjacency := genreMatchStrength(state.SeedGenre, c.Genre) * 2.5
+			modeBonus += creatorAdjacency + genreAdjacency
+			reason = "Creator-adjacent bridge"
 		}
 	case "album":
 		if state.SeedAlbumID <= 0 {
 			return 0, "", false
 		}
 		if c.AlbumID == state.SeedAlbumID {
-			modeBonus += 8
+			modeBonus += 9
 			reason = "Album radio core selection"
-		} else if state.SeedGenre != "" && strings.EqualFold(strings.TrimSpace(state.SeedGenre), strings.TrimSpace(c.Genre)) {
-			modeBonus += 2
+		} else if state.SeedGenre != "" && genreMatchStrength(state.SeedGenre, c.Genre) > 0 {
+			modeBonus += 3
 			reason = "Album-adjacent genre bridge"
 		} else {
 			return 0, "", false
 		}
 	case "try_me":
-		novelty := math.Max(0, 14-(float64(c.Plays)*0.12))
-		modeBonus += novelty
+		novelty := math.Max(0, 16-(float64(c.Plays)*0.14))
+		qualityGate := (c.Rating * 0.4) + math.Max(0, c.RecentScore*0.08)
+		modeBonus += novelty + qualityGate
 		reason = "Try me: low-play discovery"
 	}
 
@@ -1257,8 +1496,10 @@ func applyFeedbackToOptions(opts *sessionOptions, track candidateTrack, action s
 
 func normalizeMode(raw string) string {
 	switch strings.TrimSpace(strings.ToLower(raw)) {
-	case "for_you", "genre", "creator", "album", "try_me":
+	case "for_you", "radio", "try_me":
 		return strings.TrimSpace(strings.ToLower(raw))
+	case "genre", "creator", "album":
+		return "radio"
 	default:
 		return ""
 	}
@@ -1277,6 +1518,8 @@ func buildSummary(state sessionState) string {
 	switch state.Mode {
 	case "for_you":
 		return "Auto-built around your listening profile and preferred genres."
+	case "radio":
+		return "A mixed auto-DJ lane built from the platform's strongest public tracks."
 	case "genre":
 		return fmt.Sprintf("Locked to public tracks in %s.", state.SeedGenre)
 	case "creator":

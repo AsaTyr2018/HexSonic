@@ -83,12 +83,16 @@
       applyEQPreset,
       signStream,
       startTrackById,
+      pickMainAdjacentIndex,
       activeAudio,
       emitJukeboxState,
       emitJukeboxTick,
       openJukeboxPopout,
       maybeScheduleJukeboxCrossfade,
       playAlbum,
+      setManualQueueOpen,
+      renderManualQueueDock,
+      clearMainQueue,
       insertQueueAfterCurrent,
       appendToQueue,
       displayRoleLabel,
@@ -129,16 +133,17 @@
       bindDiscoveryActions,
       renderDiscovery,
       loadDiscovery,
+      ensureDiscoveryLoaded,
       renderCreatorStats,
       loadCreatorStats,
       syncJukeboxModeControls,
       updateJukeboxControls,
       renderJukeboxNowPlaying,
       renderJukeboxQueue,
+      resetJukeboxSessionState,
       startJukeboxSession,
       refreshJukeboxQueue,
       sendJukeboxFeedback,
-      applyJukeboxControl,
       handleJukeboxAdvance,
       renderJukebox,
       canCreatePlaylists,
@@ -187,6 +192,7 @@
       createAlbumComment,
       rateTrackByID,
       renderTrackDetail,
+      openAlbumByID,
       openTrackDetail,
       loadData,
       selectAlbum,
@@ -228,7 +234,9 @@
       uploadTrackLyrics,
       uploadTrackLyricsPlain,
       saveAlbumMetadata,
+      deleteAlbumMetadata,
       uploadAlbumCover,
+      bindCreatorCenterEvents,
     } = ns;
 
     function syncRoleUI() {
@@ -251,11 +259,11 @@
       $('navAdminLogs').classList.toggle('hidden', !adminNavVisible);
       syncPublicUI();
 
-      $('navUpload').classList.toggle('hidden', !creatorNavVisible);
+      $('navCreatorCenter').classList.toggle('hidden', !creatorNavVisible);
       $('navCreatorStats').classList.toggle('hidden', !creatorNavVisible);
       $('navJobs').classList.toggle('hidden', !adminNavVisible);
 
-      if (!canUpload() && !$('viewUpload').classList.contains('hidden')) {
+      if (!canUpload() && !$('viewCreatorCenter').classList.contains('hidden')) {
         switchView('albums');
       }
       if (!canManage() && (!$('viewTrackManage').classList.contains('hidden') || !$('viewAlbumManage').classList.contains('hidden'))) {
@@ -281,6 +289,22 @@
       }
       if (!canAdmin() && (!$('viewAdminUsers').classList.contains('hidden') || !$('viewAdminSystem').classList.contains('hidden') || !$('viewAdminLogs').classList.contains('hidden'))) {
         switchView('albums');
+      }
+    }
+
+    async function applyRouteFromHash() {
+      const view = readViewFromHash();
+      switchView(view, false);
+      if (view === 'tracks' && Number(state.tracksAlbumContextID) > 0) {
+        await openAlbumByID(state.tracksAlbumContextID);
+        return;
+      }
+      if (view === 'track_detail' && state.selectedDetailTrackId) {
+        await openTrackDetail(state.selectedDetailTrackId);
+        return;
+      }
+      if (view === 'discovery') {
+        await ensureDiscoveryLoaded();
       }
     }
 
@@ -457,6 +481,23 @@
       });
     }
 
+    function extractUploadErrorMessage(res) {
+      if (!res) return '';
+      if (res.json && typeof res.json === 'object') {
+        const candidates = [
+          res.json.error,
+          res.json.message,
+          res.json.detail
+        ];
+        const hit = candidates.find((v) => typeof v === 'string' && v.trim());
+        if (hit) return hit.trim();
+      }
+      if (typeof res.text === 'string' && res.text.trim()) {
+        return res.text.trim();
+      }
+      return '';
+    }
+
     async function handleUpload(e) {
       e.preventDefault();
       if (!canUpload()) {
@@ -471,7 +512,6 @@
       out.textContent = 'Uploading...';
       batchOut.textContent = '';
       setUploadProgress(0, 0, 0);
-      setUploadBusy(true);
 
       try {
         if (mode === 'album') {
@@ -485,6 +525,7 @@
           const totalBytes = stat.audio.reduce((sum, f) => sum + Number(f.size || 0), 0);
           let uploadedBytes = 0;
           const agg = { imported: 0, deduped: 0, skipped: 0, failed: 0, results: [] };
+          setUploadBusy(true);
 
           for (let i = 0; i < chunks.length; i += 1) {
             const chunk = chunks[i];
@@ -508,7 +549,10 @@
 
             if (!res.ok) {
               out.className = 'bad';
-              out.textContent = `Batch upload failed in chunk ${i + 1}/${chunks.length} (${res.status}).`;
+              const detail = extractUploadErrorMessage(res);
+              out.textContent = detail
+                ? `Batch upload failed in chunk ${i + 1}/${chunks.length} (${res.status}): ${detail}`
+                : `Batch upload failed in chunk ${i + 1}/${chunks.length} (${res.status}).`;
               return;
             }
             const json = res.json || {};
@@ -529,10 +573,14 @@
         }
 
         const form = new FormData(e.target);
+        setUploadBusy(true);
         const res = await uploadMultipartWithProgress('/api/v1/tracks/import', form);
         if (!res.ok) {
           out.className = 'bad';
-          out.textContent = `Upload failed (${res.status}).`;
+          const detail = extractUploadErrorMessage(res);
+          out.textContent = detail
+            ? `Upload failed (${res.status}): ${detail}`
+            : `Upload failed (${res.status}).`;
           return;
         }
 
@@ -675,7 +723,7 @@
         };
       });
       window.addEventListener('hashchange', () => {
-        switchView(readViewFromHash(), false);
+        void applyRouteFromHash();
       });
 
       $('btnOpenLogin').onclick = () => {
@@ -734,22 +782,25 @@
       $('btnTrackUploadCover').onclick = uploadTrackCover;
       $('btnTrackUploadLyrics').onclick = uploadTrackLyrics;
       $('btnTrackUploadLyricsPlain').onclick = uploadTrackLyricsPlain;
-      $('btnTrackLoadID').onclick = async () => {
-        if (!canAdmin()) {
-          alert('Admin role required.');
-          return;
-        }
-        const id = $('trackLoadID').value.trim();
-        if (!id) {
-          alert('Please enter a Track ID.');
-          return;
-        }
-        const ok = await loadTrackForEditor(id, false);
-        if (!ok) {
-          alert('Track not found or no access.');
-        }
-      };
+      if ($('btnTrackLoadID')) {
+        $('btnTrackLoadID').onclick = async () => {
+          if (!canAdmin()) {
+            alert('Admin role required.');
+            return;
+          }
+          const id = $('trackLoadID').value.trim();
+          if (!id) {
+            alert('Please enter a Track ID.');
+            return;
+          }
+          const ok = await loadTrackForEditor(id, false);
+          if (!ok) {
+            alert('Track not found or no access.');
+          }
+        };
+      }
       $('btnAlbumSaveMeta').onclick = saveAlbumMetadata;
+      if ($('btnAlbumDelete')) $('btnAlbumDelete').onclick = deleteAlbumMetadata;
       $('btnAlbumUploadCover').onclick = uploadAlbumCover;
       $('btnAdminRefresh').onclick = loadJobs;
       $('btnAdminUsersRefresh').onclick = loadAdminUsers;
@@ -786,6 +837,7 @@
       $('btnAdminLogsRefresh').onclick = loadAdminAuditLogs;
       $('btnAdminDebugSave').onclick = saveAdminDebugToggle;
       $('btnSaveJukeboxSettings').onclick = saveAdminJukeboxSettings;
+      if (typeof bindCreatorCenterEvents === 'function') bindCreatorCenterEvents();
       $('adminLogSource').onchange = loadAdminAuditLogs;
       $('btnToggleRegistration').onclick = toggleRegistrationSetting;
       $('btnProfileSave').onclick = saveMyProfile;
@@ -818,6 +870,9 @@
       document.querySelectorAll('[data-jukebox-mode]').forEach((btn) => {
         btn.onclick = () => {
           state.jukebox.mode = btn.getAttribute('data-jukebox-mode') || 'for_you';
+          if (typeof resetJukeboxSessionState === 'function') {
+            resetJukeboxSessionState();
+          }
           syncJukeboxModeControls();
         };
       });
@@ -827,12 +882,6 @@
       $('btnJukeboxLessLike').onclick = () => sendJukeboxFeedback('less_like_this');
       $('btnJukeboxStayGenre').onclick = () => sendJukeboxFeedback('stay_in_genre');
       $('btnJukeboxSurprise').onclick = () => sendJukeboxFeedback('surprise_me');
-      $('btnJukeboxPlayPause').onclick = () => applyJukeboxControl('play_pause');
-      $('btnJukeboxPrev').onclick = () => applyJukeboxControl('prev');
-      $('btnJukeboxNext').onclick = () => applyJukeboxControl('next');
-      $('btnJukeboxMute').onclick = () => applyJukeboxControl('mute_toggle');
-      $('jukeboxSeekRange').oninput = (e) => applyJukeboxControl('seek', Number(e.target.value) / 1000);
-      $('jukeboxVolumeRange').oninput = (e) => applyJukeboxControl('volume', Number(e.target.value));
       $('btnJukeboxPopout').onclick = openJukeboxPopout;
       $('adminUserSearch').addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
@@ -848,6 +897,10 @@
       $('btnOpenPlaylistDock').onclick = () => setPlaylistDockOpen(true);
       $('btnPlaylistDockToggle').onclick = () => setPlaylistDockOpen(!state.playlistDockOpen);
       $('btnPlaylistDockClose').onclick = () => setPlaylistDockOpen(false);
+      if ($('btnManualQueue')) $('btnManualQueue').onclick = () => setManualQueueOpen(!state.manualQueueOpen);
+      if ($('btnManualQueueToggle')) $('btnManualQueueToggle').onclick = () => setManualQueueOpen(!state.manualQueueOpen);
+      $('btnManualQueueClose').onclick = () => setManualQueueOpen(false);
+      $('btnManualQueueClear').onclick = () => clearMainQueue();
       $('btnPlaylistDockOpen').onclick = () => switchView('playlists');
       $('playlistDockSelect').onchange = async (e) => {
         const id = Number(e.target.value || '0');
@@ -905,6 +958,8 @@
         if (!rows.length) return;
         addTracksToPlaylist(rows.map((x) => x.id));
       };
+      $('btnShuffle').onclick = () => applyPlayerControl('toggle_shuffle');
+      $('btnRepeat').onclick = () => applyPlayerControl('cycle_repeat');
       $('btnAlbumCommentSend').onclick = createAlbumComment;
       $('albumCommentInput').addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
@@ -1010,19 +1065,17 @@
           return;
         }
         if (audio !== activeAudio()) return;
-        if ((state.activeEngine || 'main') === 'jukebox' && state.jukeboxPlayer?.crossfading) return;
-        const queue = (state.activeEngine || 'main') === 'jukebox'
-          ? (state.jukeboxPlayer?.queue || [])
-          : (state.mainPlayer?.queue || []);
-        let queueIndex = (state.activeEngine || 'main') === 'jukebox'
-          ? Number(state.jukeboxPlayer?.queueIndex || -1)
-          : Number(state.mainPlayer?.queueIndex || -1);
-        if (!queue.length || queueIndex < 0) return;
+        const queue = state.mainPlayer?.queue || [];
+        if (!queue.length) return;
         finalizeListeningSession('natural_end');
-        if (await handleJukeboxAdvance()) return;
-        queueIndex = (queueIndex + 1) % queue.length;
-        state.mainPlayer.queueIndex = queueIndex;
-        await startTrackById(queue[queueIndex].id, queue);
+        const nextIdx = typeof pickMainAdjacentIndex === 'function' ? pickMainAdjacentIndex(1) : -1;
+        if (nextIdx < 0) {
+          updatePlayerButtons();
+          emitPlayerState(true);
+          return;
+        }
+        state.mainPlayer.queueIndex = nextIdx;
+        await startTrackById(queue[nextIdx].id, queue);
       };
       audio.onpause = () => {
         if (isJukeboxDeck) {
@@ -1117,12 +1170,16 @@
       applyInviteFromURL();
       applyInvitePageMode();
       setPlaylistDockOpen(state.playlistDockOpen);
+      renderManualQueueDock();
+      setManualQueueOpen(state.manualQueueOpen);
       syncUploadMode();
       syncJukeboxModeControls();
       renderJukeboxQueue();
       setUploadProgress(0, 0, 0);
       hidePlayer();
       clearSelectedPlaylist();
+      const initialView = readViewFromHash();
+      switchView(initialView, false);
       await loadPublicSettings();
       await loadMe();
       await loadData();
@@ -1131,8 +1188,9 @@
       if (state.invitePageMode && state.inviteToken) {
         switchView('invite_register', false);
       } else {
-        switchView(readViewFromHash(), false);
+        await applyRouteFromHash();
       }
+      document.body.classList.remove('booting');
     }
 
     Object.assign(ns, {

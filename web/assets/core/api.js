@@ -80,7 +80,7 @@
 
     function startNotificationPolling() {
       stopNotificationPolling();
-      if (!state.me || state.popoutMode) return;
+      if (!state.me || state.popoutMode || state.jukeboxPopoutMode) return;
       state.notificationPollTimer = window.setInterval(async () => {
         if (document.hidden || !state.me) return;
         if (typeof ns.loadNotifications === 'function') await ns.loadNotifications();

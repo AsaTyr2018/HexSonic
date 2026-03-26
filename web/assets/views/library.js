@@ -1,5 +1,6 @@
 (function(ns) {
 const { state, $, escapeHtml, headers, apiFetch, fmt, normText, saveSelectedAlbumID, loadSelectedAlbumID, ICON_PLAY, ICON_DETAIL, ICON_PLAYLIST } = ns;
+const setStatus = (...args) => ns.setStatus(...args);
 const canUpload = (...args) => ns.canUpload(...args);
 const canAdmin = (...args) => ns.canAdmin(...args);
 const canManageTrack = (...args) => ns.canManageTrack(...args);
@@ -7,6 +8,7 @@ const openUserProfile = (...args) => ns.openUserProfile(...args);
 const addTrackToPlaylist = (...args) => ns.addTrackToPlaylist(...args);
 const loadTrackForEditor = (...args) => ns.loadTrackForEditor(...args);
 const setAdminTarget = (...args) => ns.setAdminTarget(...args);
+const openCreatorCenterTrack = (...args) => ns.openCreatorCenterTrack(...args);
 const switchView = (...args) => ns.switchView(...args);
 const renderAdminUsers = (...args) => ns.renderAdminUsers(...args);
 const loadJobs = (...args) => ns.loadJobs(...args);
@@ -409,13 +411,7 @@ const startTrackById = (...args) => ns.startTrackById(...args);
         const manageBtn = tr.querySelector('[data-manage]');
         if (manageBtn) {
           manageBtn.onclick = async () => {
-            const targetView = canAdmin() ? 'admin_track_manage' : 'user_track_manage';
-            switchView(targetView);
-            const loaded = await loadTrackForEditor(t.id, false);
-            if (!loaded) {
-              alert('Track kann nicht bearbeitet werden (kein Zugriff oder nicht gefunden).');
-              setAdminTarget(null);
-            }
+            await openCreatorCenterTrack(t.id);
           };
         }
         body.appendChild(tr);
@@ -625,10 +621,15 @@ const startTrackById = (...args) => ns.startTrackById(...args);
     async function openTrackDetail(trackID) {
       const res = await apiFetch(`/api/v1/tracks/${encodeURIComponent(trackID)}`, { headers: headers() }, false);
       if (!res.ok) {
-        // Retry with auth headers if guest call was forbidden for private tracks.
+        if (res.status === 403 && !state.me) {
+          setStatus('Login required to view this track', 'bad');
+          $('authDrawer').classList.remove('hidden');
+          switchView('discovery');
+          return;
+        }
         const authed = await apiFetch(`/api/v1/tracks/${encodeURIComponent(trackID)}`, { headers: headers() });
-        if (!authed.ok) {
-          alert('Track details not available.');
+      if (!authed.ok) {
+          alert(authed.status === 403 ? 'Track is not accessible.' : 'Track details not available.');
           return;
         }
         state.selectedDetailTrackData = await authed.json();
@@ -637,7 +638,67 @@ const startTrackById = (...args) => ns.startTrackById(...args);
       }
       state.selectedDetailTrackId = trackID;
       renderTrackDetail();
-      switchView('track_detail');
+      switchView('track_detail', false);
+      const targetHash = `#track/${encodeURIComponent(trackID)}`;
+      if (window.location.hash !== targetHash) window.location.hash = targetHash.slice(1);
+    }
+
+    async function openAlbumByID(albumID) {
+      const id = Number(albumID || 0);
+      if (!id) return;
+      let album = state.albums.find((a) => Number(a.id) === id) || null;
+      if (!album) {
+        const res = await apiFetch(`/api/v1/albums/${encodeURIComponent(String(id))}`, { headers: headers() }, false);
+        if (!res.ok) {
+          if (res.status === 403 && !state.me) {
+            setStatus('Login required to view this album', 'bad');
+            $('authDrawer').classList.remove('hidden');
+            switchView('discovery');
+            return;
+          }
+          const authed = await apiFetch(`/api/v1/albums/${encodeURIComponent(String(id))}`, { headers: headers() });
+          if (!authed.ok) {
+            alert(authed.status === 403 ? 'Album is not accessible.' : 'Album details not available.');
+            switchView('albums');
+            return;
+          }
+          album = await authed.json();
+        } else {
+          album = await res.json();
+        }
+        if (album) {
+          const normalized = {
+            id: album.id,
+            title: album.title,
+            artist: album.artist,
+            genre: album.genre || '',
+            visibility: album.visibility,
+            cover_path: album.cover_path || '',
+            owner_sub: album.owner_sub || '',
+            uploader_name: album.uploader_name || album.owner_sub || ''
+          };
+          const idx = state.albums.findIndex((a) => Number(a.id) === Number(normalized.id));
+          if (idx >= 0) state.albums[idx] = normalized;
+          else state.albums.push(normalized);
+          album = normalized;
+        }
+      }
+      if (!album) return;
+      state.selectedAlbum = album;
+      state.tracksAlbumContextID = Number(album.id) || 0;
+      saveSelectedAlbumID(state.selectedAlbum ? state.selectedAlbum.id : 0);
+      renderAlbums();
+      renderTracks();
+      renderAlbumDetail();
+      if (state.selectedAlbum && state.selectedAlbum.id) {
+        await loadAlbumComments(state.selectedAlbum.id);
+      } else {
+        state.selectedAlbumComments = [];
+        renderAlbumComments();
+      }
+      switchView('tracks', false);
+      const targetHash = `#album/${encodeURIComponent(String(state.selectedAlbum.id))}`;
+      if (window.location.hash !== targetHash) window.location.hash = targetHash.slice(1);
     }
 
     async function loadData() {
@@ -678,7 +739,6 @@ const startTrackById = (...args) => ns.startTrackById(...args);
 
       syncGenreFilterControl(state.currentView);
       applyFilters();
-      await loadDiscovery();
       renderAlbums();
       renderTracks();
       renderAlbumDetail();
@@ -695,6 +755,9 @@ const startTrackById = (...args) => ns.startTrackById(...args);
       await loadNotifications();
       await loadMyProfile();
       await loadCreatorHighscore();
+      if (state.currentView === 'discovery') {
+        await loadDiscovery();
+      }
       if (canUpload() && !$('viewCreatorStats').classList.contains('hidden')) {
         await loadCreatorStats();
       }
@@ -721,19 +784,7 @@ const startTrackById = (...args) => ns.startTrackById(...args);
     }
 
     async function selectAlbum(id) {
-      state.selectedAlbum = state.albums.find((a) => a.id === id) || null;
-      state.tracksAlbumContextID = state.selectedAlbum ? Number(state.selectedAlbum.id) : 0;
-      saveSelectedAlbumID(state.selectedAlbum ? state.selectedAlbum.id : 0);
-      renderAlbums();
-      renderTracks();
-      renderAlbumDetail();
-      if (state.selectedAlbum && state.selectedAlbum.id) {
-        await loadAlbumComments(state.selectedAlbum.id);
-      } else {
-        state.selectedAlbumComments = [];
-        renderAlbumComments();
-      }
-      switchView('tracks');
+      await openAlbumByID(id);
     }
 
 Object.assign(window.HexSonic, {
@@ -763,6 +814,7 @@ Object.assign(window.HexSonic, {
       createAlbumComment,
       rateTrackByID,
       renderTrackDetail,
+      openAlbumByID,
       openTrackDetail,
       loadData,
       selectAlbum

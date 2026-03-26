@@ -25,6 +25,7 @@ const syncPublicUI = (...args) => ns.syncPublicUI(...args);
       $('trackEditGenre').value = track.genre || '';
       $('trackEditLyricsPlain').value = '';
       loadTrackDetails(track.id);
+      if (typeof ns.syncCreatorCenterSelection === 'function') ns.syncCreatorCenterSelection();
     }
 
     function applyTrackManageMode(view) {
@@ -69,11 +70,13 @@ const syncPublicUI = (...args) => ns.syncPublicUI(...args);
       $('albumEditArtist').value = album.artist || '';
       $('albumEditGenre').value = album.genre || '';
       $('albumEditVisibility').value = album.visibility || 'private';
+      if (typeof ns.syncCreatorCenterSelection === 'function') ns.syncCreatorCenterSelection();
     }
 
 
     function renderManageAlbums() {
       const body = $('manageAlbumsBody');
+      if (!body) return;
       body.innerHTML = '';
       if (!canManage()) {
         body.innerHTML = '<tr><td colspan="7" class="muted">Login required.</td></tr>';
@@ -110,11 +113,20 @@ const syncPublicUI = (...args) => ns.syncPublicUI(...args);
 
     async function loadManageData() {
       if (!canManage()) {
+        state.manageTracks = [];
         state.manageAlbums = [];
         renderManageAlbums();
         setAdminTarget(null);
         setAlbumTarget(null);
+        if (typeof ns.renderCreatorCenter === 'function') ns.renderCreatorCenter();
         return;
+      }
+      const tRes = await apiFetch('/api/v1/manage/tracks', { headers: headers() });
+      if (tRes.ok) {
+        const tj = await tRes.json();
+        state.manageTracks = tj.tracks || [];
+      } else {
+        state.manageTracks = [];
       }
       const aRes = await apiFetch('/api/v1/manage/albums', { headers: headers() });
       if (aRes.ok) {
@@ -131,6 +143,7 @@ const syncPublicUI = (...args) => ns.syncPublicUI(...args);
         const a = state.manageAlbums.find((x) => Number(x.id) === Number(state.selectedManageAlbumId));
         if (a) setAlbumTarget(a);
       }
+      if (typeof ns.renderCreatorCenter === 'function') ns.renderCreatorCenter();
     }
 
     function renderAdminUsers() {
@@ -870,6 +883,26 @@ const syncPublicUI = (...args) => ns.syncPublicUI(...args);
       await loadData();
     }
 
+    async function deleteAlbumMetadata() {
+      if (!state.selectedManageAlbumId) {
+        alert('Select an album first.');
+        return;
+      }
+      const ok = confirm('Delete selected album? Only empty albums can be removed.');
+      if (!ok) return;
+      const res = await apiFetch(`/api/v1/manage/albums/${state.selectedManageAlbumId}`, {
+        method: 'DELETE',
+        headers: headers()
+      });
+      if (!res.ok) {
+        const text = (await res.text().catch(() => '')).trim();
+        alert(text || `Album delete failed (${res.status}).`);
+        return;
+      }
+      setAlbumTarget(null);
+      await loadData();
+    }
+
     async function uploadAlbumCover() {
       if (!state.selectedManageAlbumId) {
         alert('Select an album first in Album Management.');
@@ -934,6 +967,7 @@ Object.assign(window.HexSonic, {
       uploadTrackLyrics,
       uploadTrackLyricsPlain,
       saveAlbumMetadata,
+      deleteAlbumMetadata,
       uploadAlbumCover
 });
 })(window.HexSonic = window.HexSonic || {});
