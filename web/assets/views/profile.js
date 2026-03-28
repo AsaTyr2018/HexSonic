@@ -917,9 +917,9 @@ const loadPlaylists = (...args) => ns.loadPlaylists(...args);
       state.selectedPublicUserProfile = await pRes.json();
       state.selectedUserSub = String(state.selectedPublicUserProfile?.subject || identifier);
       state.selectedUserHandle = profileRouteIdentifier(state.selectedPublicUserProfile);
-      const canonicalUserHash = `#user_profile/${encodeURIComponent(state.selectedUserHandle || state.selectedUserSub)}`;
-      if (location.hash !== canonicalUserHash) {
-        history.replaceState(null, '', canonicalUserHash);
+      const canonicalUserPath = `/user/${encodeURIComponent(state.selectedUserHandle || state.selectedUserSub)}`;
+      if (location.pathname !== canonicalUserPath) {
+        history.replaceState(null, '', canonicalUserPath);
       }
       state.selectedPublicUserUploads = uRes.ok ? await uRes.json() : { albums: [], tracks: [] };
       state.selectedPublicUserComments = cRes.ok ? ((await cRes.json()).comments || []) : [];

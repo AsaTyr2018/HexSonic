@@ -1,6 +1,37 @@
 (function(ns) {
   const { state, $, canAdmin, canUpload, canManage } = ns;
 
+    function buildViewPath(view) {
+      switch (view) {
+        case 'discovery': return '/';
+        case 'jukebox': return '/jukebox';
+        case 'creators': return '/creators';
+        case 'albums': return '/albums';
+        case 'tracks':
+          if (state.selectedAlbum && Number(state.selectedAlbum.id) > 0 && Number(state.tracksAlbumContextID) === Number(state.selectedAlbum.id)) {
+            return `/album/${encodeURIComponent(String(state.selectedAlbum.id))}`;
+          }
+          return '/tracks';
+        case 'playlists': return '/playlists';
+        case 'favorites': return '/favorites';
+        case 'profile': return '/profile';
+        case 'admin_users': return '/admin/users';
+        case 'admin_system': return '/admin/system';
+        case 'admin_logs': return '/admin/logs';
+        case 'creator_center': return '/creator-center';
+        case 'creator_stats': return '/creator-stats';
+        case 'jobs': return '/jobs';
+        case 'track_detail':
+          return state.selectedDetailTrackId ? `/track/${encodeURIComponent(state.selectedDetailTrackId)}` : '/tracks';
+        case 'user_profile':
+          return `/user/${encodeURIComponent(state.selectedUserHandle || state.selectedUserSub || '')}`;
+        case 'invite_register':
+          return '/register';
+        default:
+          return '/';
+      }
+    }
+
     function syncTracksContextChrome() {
       const hasAlbumContext = state.currentView === 'tracks' && !!(state.selectedAlbum && Number(state.selectedAlbum.id) === Number(state.tracksAlbumContextID));
       $('tracksAlbumHero').classList.toggle('hidden', !hasAlbumContext);
@@ -37,11 +68,42 @@
     }
 
     function readViewFromHash() {
-      const raw = (window.location.hash || '').replace(/^#/, '').trim();
-      if (!raw) {
-        if (state.inviteToken && window.location.pathname.startsWith('/register')) return 'invite_register';
-        return 'discovery';
+      const path = String(window.location.pathname || '').trim();
+      if (path === '' || path === '/') return 'discovery';
+      if (path.startsWith('/album/')) {
+        const id = Number(path.slice('/album/'.length));
+        state.selectedAlbum = null;
+        state.tracksAlbumContextID = Number.isFinite(id) && id > 0 ? id : 0;
+        return 'tracks';
       }
+      if (path.startsWith('/track/')) {
+        const id = decodeURIComponent(path.slice('/track/'.length));
+        state.selectedDetailTrackId = id;
+        return 'track_detail';
+      }
+      if (path.startsWith('/user/')) {
+        const ident = decodeURIComponent(path.slice('/user/'.length));
+        state.selectedUserHandle = ident;
+        state.selectedUserSub = ident;
+        return 'user_profile';
+      }
+      if (path === '/jukebox') return 'jukebox';
+      if (path === '/creators') return 'creators';
+      if (path === '/albums') return 'albums';
+      if (path === '/tracks') return 'tracks';
+      if (path === '/playlists') return 'playlists';
+      if (path === '/favorites') return 'favorites';
+      if (path === '/profile') return 'profile';
+      if (path === '/creator-center') return 'creator_center';
+      if (path === '/creator-stats') return 'creator_stats';
+      if (path === '/admin/users') return 'admin_users';
+      if (path === '/admin/system') return 'admin_system';
+      if (path === '/admin/logs') return 'admin_logs';
+      if (path === '/jobs') return 'jobs';
+      if (path === '/register') return state.inviteToken ? 'invite_register' : 'discovery';
+
+      const raw = (window.location.hash || '').replace(/^#/, '').trim();
+      if (!raw) return 'discovery';
       if (raw.startsWith('album/')) {
         const id = Number(raw.slice('album/'.length));
         state.selectedAlbum = null;
@@ -62,7 +124,7 @@
       return raw;
     }
 
-  function switchView(view, updateHash = true) {
+  function switchView(view, updateHistory = true, replaceHistory = false) {
     view = allowedViewOrDefault(view);
     state.currentView = view;
 
@@ -132,20 +194,19 @@
     if (view === 'user_profile' && state.selectedUserSub) {
       ns.loadPublicUserProfile();
     }
-    const targetHash =
-      (view === 'user_profile' && (state.selectedUserHandle || state.selectedUserSub))
-        ? `#user_profile/${encodeURIComponent(state.selectedUserHandle || state.selectedUserSub)}`
-        : (view === 'tracks' && state.selectedAlbum && Number(state.selectedAlbum.id) > 0 && Number(state.tracksAlbumContextID) === Number(state.selectedAlbum.id))
-          ? `#album/${encodeURIComponent(String(state.selectedAlbum.id))}`
-          : (view === 'track_detail' && state.selectedDetailTrackId)
-            ? `#track/${encodeURIComponent(state.selectedDetailTrackId)}`
-            : `#${view}`;
-    if (updateHash && window.location.hash !== targetHash) {
-      window.location.hash = targetHash.replace(/^#/, '');
+    const targetPath = buildViewPath(view);
+    const currentPath = `${window.location.pathname}${window.location.search}`;
+    if (updateHistory && currentPath !== targetPath) {
+      if (replaceHistory) {
+        history.replaceState(null, '', targetPath);
+      } else {
+        history.pushState(null, '', targetPath);
+      }
     }
   }
 
   Object.assign(ns, {
+    buildViewPath,
     syncTracksContextChrome,
     syncToolbarForView,
     allowedViewOrDefault,

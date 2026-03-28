@@ -638,9 +638,7 @@ const startTrackById = (...args) => ns.startTrackById(...args);
       }
       state.selectedDetailTrackId = trackID;
       renderTrackDetail();
-      switchView('track_detail', false);
-      const targetHash = `#track/${encodeURIComponent(trackID)}`;
-      if (window.location.hash !== targetHash) window.location.hash = targetHash.slice(1);
+      switchView('track_detail');
     }
 
     async function openAlbumByID(albumID) {
@@ -696,9 +694,7 @@ const startTrackById = (...args) => ns.startTrackById(...args);
         state.selectedAlbumComments = [];
         renderAlbumComments();
       }
-      switchView('tracks', false);
-      const targetHash = `#album/${encodeURIComponent(String(state.selectedAlbum.id))}`;
-      if (window.location.hash !== targetHash) window.location.hash = targetHash.slice(1);
+      switchView('tracks');
     }
 
     async function loadData() {

@@ -722,7 +722,7 @@
           switchView(n.dataset.view);
         };
       });
-      window.addEventListener('hashchange', () => {
+      window.addEventListener('popstate', () => {
         void applyRouteFromHash();
       });
 
@@ -1186,9 +1186,11 @@
       syncRoleUI();
       emitPlayerState(true);
       if (state.invitePageMode && state.inviteToken) {
-        switchView('invite_register', false);
+        switchView('invite_register', false, true);
       } else {
         await applyRouteFromHash();
+        const pathView = readViewFromHash();
+        switchView(pathView, true, true);
       }
       document.body.classList.remove('booting');
     }

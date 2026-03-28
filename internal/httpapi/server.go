@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -170,6 +171,8 @@ func (s *Server) Router() http.Handler {
 	r.Handle("/prometheus/*", s.adminProxyHandler("/prometheus", s.cfg.PrometheusProxyURL))
 	r.Handle("/grafana/*", s.adminProxyHandler("/grafana", s.cfg.GrafanaProxyURL))
 	r.Handle("/assets/*", http.StripPrefix("/assets/", http.FileServer(http.Dir("web/assets"))))
+	r.Get("/album/{albumID}", s.shareAlbumPage)
+	r.Get("/track/{trackID}", s.shareTrackPage)
 	r.Get("/", s.index)
 	r.Get("/register", s.index)
 	r.Handle("/rest", http.HandlerFunc(s.subsonicHandler))
@@ -283,6 +286,23 @@ func (s *Server) Router() http.Handler {
 			admin.Patch("/admin/tracks/{trackID}/visibility", s.adminSetVisibility)
 			admin.Delete("/admin/tracks/{trackID}", s.adminDeleteTrack)
 		})
+	})
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.NotFound(w, r)
+			return
+		}
+		path := strings.TrimSpace(r.URL.Path)
+		if strings.HasPrefix(path, "/api/") ||
+			strings.HasPrefix(path, "/assets/") ||
+			strings.HasPrefix(path, "/rest") ||
+			strings.HasPrefix(path, "/metrics") ||
+			strings.HasPrefix(path, "/prometheus") ||
+			strings.HasPrefix(path, "/grafana") {
+			http.NotFound(w, r)
+			return
+		}
+		s.index(w, r)
 	})
 	return r
 }
@@ -538,6 +558,206 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
 	http.ServeFile(w, r, "web/index.html")
+}
+
+type shareMeta struct {
+	Title       string
+	Description string
+	ImageURL    string
+	URL         string
+	Type        string
+}
+
+func (s *Server) serveIndexWithMeta(w http.ResponseWriter, r *http.Request, meta shareMeta) {
+	body, err := os.ReadFile("web/index.html")
+	if err != nil {
+		http.Error(w, "index unavailable", http.StatusInternalServerError)
+		return
+	}
+	if strings.TrimSpace(meta.Title) == "" {
+		meta.Title = "HEXSONIC"
+	}
+	if strings.TrimSpace(meta.Description) == "" {
+		meta.Description = "HEXSONIC creator platform."
+	}
+	if strings.TrimSpace(meta.Type) == "" {
+		meta.Type = "website"
+	}
+	headExtra := fmt.Sprintf(
+		`<meta property="og:site_name" content="HEXSONIC" />
+<meta property="og:title" content="%s" />
+<meta property="og:description" content="%s" />
+<meta property="og:type" content="%s" />
+<meta property="og:url" content="%s" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="%s" />
+<meta name="twitter:description" content="%s" />`,
+		html.EscapeString(meta.Title),
+		html.EscapeString(meta.Description),
+		html.EscapeString(meta.Type),
+		html.EscapeString(meta.URL),
+		html.EscapeString(meta.Title),
+		html.EscapeString(meta.Description),
+	)
+	if strings.TrimSpace(meta.ImageURL) != "" {
+		headExtra += fmt.Sprintf(`
+<meta property="og:image" content="%s" />
+<meta name="twitter:image" content="%s" />`,
+			html.EscapeString(meta.ImageURL),
+			html.EscapeString(meta.ImageURL),
+		)
+	}
+	headExtra += `
+<meta name="theme-color" content="#1f4e7d" />`
+
+	page := string(body)
+	page = strings.Replace(page, "<title>HEXSONIC</title>", "<title>"+html.EscapeString(meta.Title)+" · HEXSONIC</title>", 1)
+	page = strings.Replace(page, "</head>", headExtra+"\n</head>", 1)
+
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, page)
+}
+
+func (s *Server) shareAlbumPage(w http.ResponseWriter, r *http.Request) {
+	albumID, err := strconv.ParseInt(chi.URLParam(r, "albumID"), 10, 64)
+	if err != nil || albumID <= 0 {
+		s.serveIndexWithMeta(w, r, shareMeta{
+			Title:       "Album",
+			Description: "HEXSONIC creator platform.",
+			URL:         externalBaseURL(r) + r.URL.Path,
+		})
+		return
+	}
+	claims, hasClaims := auth.FromContext(r.Context())
+	viewerSub := ""
+	isAdmin := false
+	if hasClaims {
+		viewerSub = claims.Subject
+		isAdmin = auth.HasRole(claims, "admin")
+	}
+	allowed, err := s.canAccessAlbum(r.Context(), viewerSub, isAdmin, albumID)
+	if err != nil || !allowed {
+		s.serveIndexWithMeta(w, r, shareMeta{
+			Title:       "HEXSONIC Album",
+			Description: "This album is not publicly previewable on HEXSONIC.",
+			URL:         externalBaseURL(r) + r.URL.Path,
+		})
+		return
+	}
+	var title, artist, genre, visibility, ownerSub string
+	var trackCount int64
+	if err := s.db.QueryRow(r.Context(), `
+		SELECT a.title, COALESCE(ar.name,''), COALESCE(a.genre,''), a.visibility, a.owner_sub, COALESCE(COUNT(t.id),0)::bigint
+		FROM albums a
+		LEFT JOIN artists ar ON ar.id=a.artist_id
+		LEFT JOIN tracks t ON t.album_id=a.id
+		WHERE a.id=$1
+		GROUP BY a.title, ar.name, a.genre, a.visibility, a.owner_sub
+	`, albumID).Scan(&title, &artist, &genre, &visibility, &ownerSub, &trackCount); err != nil {
+		s.serveIndexWithMeta(w, r, shareMeta{
+			Title:       "HEXSONIC Album",
+			Description: "Album unavailable.",
+			URL:         externalBaseURL(r) + r.URL.Path,
+		})
+		return
+	}
+	imageURL := ""
+	if strings.EqualFold(strings.TrimSpace(visibility), "public") {
+		imageURL = fmt.Sprintf("%s/api/v1/albums/%d/cover", externalBaseURL(r), albumID)
+	}
+	descParts := []string{}
+	if strings.TrimSpace(artist) != "" {
+		descParts = append(descParts, artist)
+	}
+	if strings.TrimSpace(genre) != "" {
+		descParts = append(descParts, genre)
+	}
+	if trackCount > 0 {
+		descParts = append(descParts, fmt.Sprintf("%d tracks", trackCount))
+	}
+	desc := strings.Join(descParts, " · ")
+	if desc == "" {
+		desc = "Shared on HEXSONIC."
+	}
+	s.serveIndexWithMeta(w, r, shareMeta{
+		Title:       title,
+		Description: desc,
+		ImageURL:    imageURL,
+		URL:         externalBaseURL(r) + r.URL.Path,
+		Type:        "music.album",
+	})
+}
+
+func (s *Server) shareTrackPage(w http.ResponseWriter, r *http.Request) {
+	trackID := strings.TrimSpace(chi.URLParam(r, "trackID"))
+	if trackID == "" {
+		s.serveIndexWithMeta(w, r, shareMeta{
+			Title:       "Track",
+			Description: "HEXSONIC creator platform.",
+			URL:         externalBaseURL(r) + r.URL.Path,
+		})
+		return
+	}
+	claims, hasClaims := auth.FromContext(r.Context())
+	viewerSub := ""
+	isAdmin := false
+	if hasClaims {
+		viewerSub = claims.Subject
+		isAdmin = auth.HasRole(claims, "admin")
+	}
+	allowed, err := s.canAccessTrack(r.Context(), viewerSub, isAdmin, trackID)
+	if err != nil || !allowed {
+		s.serveIndexWithMeta(w, r, shareMeta{
+			Title:       "HEXSONIC Track",
+			Description: "This track is not publicly previewable on HEXSONIC.",
+			URL:         externalBaseURL(r) + r.URL.Path,
+		})
+		return
+	}
+	var title, artist, album, genre, visibility string
+	var albumID int64
+	if err := s.db.QueryRow(r.Context(), `
+		SELECT t.title, COALESCE(ar.name,''), COALESCE(al.title,''), COALESCE(t.genre,''), t.visibility, COALESCE(al.id,0)
+		FROM tracks t
+		LEFT JOIN artists ar ON ar.id=t.artist_id
+		LEFT JOIN albums al ON al.id=t.album_id
+		WHERE t.id=$1
+	`, trackID).Scan(&title, &artist, &album, &genre, &visibility, &albumID); err != nil {
+		s.serveIndexWithMeta(w, r, shareMeta{
+			Title:       "HEXSONIC Track",
+			Description: "Track unavailable.",
+			URL:         externalBaseURL(r) + r.URL.Path,
+		})
+		return
+	}
+	imageURL := ""
+	if strings.EqualFold(strings.TrimSpace(visibility), "public") && albumID > 0 {
+		imageURL = fmt.Sprintf("%s/api/v1/albums/%d/cover", externalBaseURL(r), albumID)
+	}
+	descParts := []string{}
+	if strings.TrimSpace(artist) != "" {
+		descParts = append(descParts, artist)
+	}
+	if strings.TrimSpace(album) != "" {
+		descParts = append(descParts, album)
+	}
+	if strings.TrimSpace(genre) != "" {
+		descParts = append(descParts, genre)
+	}
+	desc := strings.Join(descParts, " · ")
+	if desc == "" {
+		desc = "Shared on HEXSONIC."
+	}
+	s.serveIndexWithMeta(w, r, shareMeta{
+		Title:       title,
+		Description: desc,
+		ImageURL:    imageURL,
+		URL:         externalBaseURL(r) + r.URL.Path,
+		Type:        "music.song",
+	})
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
@@ -7716,18 +7936,33 @@ func normalizePlaylistVisibility(v string) string {
 
 func externalBaseURL(r *http.Request) string {
 	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
 	if xfProto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); xfProto != "" {
 		parts := strings.Split(xfProto, ",")
 		if strings.TrimSpace(parts[0]) != "" {
 			scheme = strings.TrimSpace(parts[0])
 		}
+	} else if r.TLS != nil {
+		scheme = "https"
 	}
 	host := strings.TrimSpace(r.Header.Get("X-Forwarded-Host"))
 	if host == "" {
 		host = strings.TrimSpace(r.Host)
+	}
+	if scheme == "http" && host != "" {
+		lowerHost := strings.ToLower(host)
+		if !strings.HasPrefix(lowerHost, "localhost") &&
+			!strings.HasPrefix(lowerHost, "127.0.0.1") &&
+			!strings.HasPrefix(lowerHost, "192.168.") &&
+			!strings.HasPrefix(lowerHost, "10.") &&
+			!strings.HasPrefix(lowerHost, "172.16.") &&
+			!strings.HasPrefix(lowerHost, "172.17.") &&
+			!strings.HasPrefix(lowerHost, "172.18.") &&
+			!strings.HasPrefix(lowerHost, "172.19.") &&
+			!strings.HasPrefix(lowerHost, "172.2") &&
+			!strings.HasPrefix(lowerHost, "172.30.") &&
+			!strings.HasPrefix(lowerHost, "172.31.") {
+			scheme = "https"
+		}
 	}
 	return fmt.Sprintf("%s://%s", scheme, host)
 }

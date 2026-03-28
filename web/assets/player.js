@@ -108,12 +108,12 @@ const getSelectedAlbumTracks = (...args) => ns.getSelectedAlbumTracks(...args);
 
     function isPopoutPlayerMode() {
       const u = new URL(window.location.href);
-      return (u.searchParams.get('popout_player') || '') === '1' || String(window.location.hash || '').replace(/^#/, '') === 'player_popout';
+      return (u.searchParams.get('popout_player') || '') === '1';
     }
 
     function isJukeboxPopoutMode() {
       const u = new URL(window.location.href);
-      return (u.searchParams.get('popout_jukebox') || '') === '1' || String(window.location.hash || '').replace(/^#/, '') === 'jukebox_popout';
+      return (u.searchParams.get('popout_jukebox') || '') === '1';
     }
 
     function applyPopoutPlayerMode() {
@@ -513,7 +513,6 @@ const getSelectedAlbumTracks = (...args) => ns.getSelectedAlbumTracks(...args);
     function openPopoutPlayer() {
       const u = new URL(window.location.href);
       u.searchParams.set('popout_player', '1');
-      u.hash = 'player_popout';
       const w = window.open(u.toString(), 'hexsonic_popout_player', 'width=1280,height=880,resizable=yes,scrollbars=no');
       if (!w) {
         alert('Popup blocked. Please allow popups for this site.');
@@ -526,7 +525,6 @@ const getSelectedAlbumTracks = (...args) => ns.getSelectedAlbumTracks(...args);
     function openJukeboxPopout() {
       const u = new URL(window.location.href);
       u.searchParams.set('popout_jukebox', '1');
-      u.hash = 'jukebox_popout';
       const w = window.open(u.toString(), 'hexsonic_jukebox_popout', 'width=1280,height=880,resizable=yes,scrollbars=no');
       if (!w) {
         alert('Popup blocked. Please allow popups for this site.');
